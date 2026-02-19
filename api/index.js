@@ -20,6 +20,7 @@ import projectsRouter from "./routes/projects.js";
 import paymentsRouter from "./routes/payments.js";
 import expensesRouter from "./routes/expenses.js";
 import attachmentsRouter from "./routes/attachments.js";
+import statisticsRouter from "./routes/statistics.js";
 import { requireAuth } from "./middleware/auth.js";
 const app = express();
 dotenv.config();
@@ -62,6 +63,7 @@ app.use("/api/projects", requireSupabase, requireAuth, projectsRouter);
 app.use("/api/payments", requireSupabase, requireAuth, paymentsRouter);
 app.use("/api/expenses", requireSupabase, requireAuth, expensesRouter);
 app.use("/api/attachments", requireSupabase, requireAuth, attachmentsRouter);
+app.use("/api/statistics", requireSupabase, requireAuth, statisticsRouter);
 
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);

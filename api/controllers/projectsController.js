@@ -2,13 +2,7 @@ import { supabaseAdmin } from "../../db_connection.js";
 
 const table = "projects";
 
-const statuses = [
-  "draft",
-  "active",
-  "on_hold",
-  "cancelled",
-  "completed",
-];
+const statuses = ["draft", "active", "on_hold", "cancelled", "completed"];
 export async function list(req, res) {
   try {
     const companyId = req.user?.company_id;
@@ -19,7 +13,7 @@ export async function list(req, res) {
     const {
       client_id,
       status,
-      q,              // search term
+      q, // search term
       page = "1",
       limit = "20",
     } = req.query;
@@ -43,7 +37,13 @@ export async function list(req, res) {
 
     // validate & filter status
     if (status) {
-      const allowedStatuses = ["draft", "active", "on_hold", "done", "cancelled"];
+      const allowedStatuses = [
+        "draft",
+        "active",
+        "on_hold",
+        "done",
+        "cancelled",
+      ];
       if (!allowedStatuses.includes(status)) {
         return res.status(400).json({ error: "Invalid status" });
       }
@@ -66,6 +66,26 @@ export async function list(req, res) {
         limit: limitNum,
         total: count ?? 0,
       },
+    });
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
+  }
+}
+
+export async function shortList(req, res) {
+  try {
+    const companyId = req.user?.company_id;
+    if (!companyId) {
+      return res.status(401).json({ error: "Not authenticated" });
+    }
+    const { data, error } = await supabaseAdmin
+      .from(table)
+      .select("id, title")
+      .eq("company_id", companyId)
+      .order("created_at", { ascending: false });
+    if (error) throw error;
+    return res.json({
+      projects: data || [],
     });
   } catch (err) {
     return res.status(500).json({ error: err.message });
@@ -141,7 +161,9 @@ export async function create(req, res) {
         .json({ error: "Invalid client_id for this company" });
     }
     if (start_date && due_date && new Date(due_date) < new Date(start_date)) {
-      return res.status(400).json({ error: "due_date must be after start_date" });
+      return res
+        .status(400)
+        .json({ error: "due_date must be after start_date" });
     }
     const payload = {
       company_id: companyId,
@@ -184,7 +206,8 @@ export async function update(req, res) {
       return res.status(400).json({ error: "Missing id" });
     }
 
-    const { client_id, title, details, start_date, due_date, price, status } = req.body;
+    const { client_id, title, details, start_date, due_date, price, status } =
+      req.body;
 
     // at least one field
     if (
@@ -209,8 +232,14 @@ export async function update(req, res) {
     if (start_date && due_date) {
       const sd = new Date(start_date);
       const dd = new Date(due_date);
-      if (!Number.isNaN(sd.valueOf()) && !Number.isNaN(dd.valueOf()) && dd < sd) {
-        return res.status(400).json({ error: "due_date must be after start_date" });
+      if (
+        !Number.isNaN(sd.valueOf()) &&
+        !Number.isNaN(dd.valueOf()) &&
+        dd < sd
+      ) {
+        return res
+          .status(400)
+          .json({ error: "due_date must be after start_date" });
       }
     }
 
@@ -225,7 +254,9 @@ export async function update(req, res) {
 
       if (clientErr) throw clientErr;
       if (!client) {
-        return res.status(400).json({ error: "Invalid client_id for this company" });
+        return res
+          .status(400)
+          .json({ error: "Invalid client_id for this company" });
       }
     }
 
@@ -241,7 +272,7 @@ export async function update(req, res) {
     };
 
     const clean = Object.fromEntries(
-      Object.entries(payload).filter(([, v]) => v !== undefined)
+      Object.entries(payload).filter(([, v]) => v !== undefined),
     );
 
     const { data, error } = await supabaseAdmin

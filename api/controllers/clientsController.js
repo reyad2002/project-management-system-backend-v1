@@ -46,6 +46,29 @@ export async function list(req, res) {
   }
 }
 
+export async function shortList(req, res) {
+
+  try {
+    const companyId = req.user?.company_id;
+    if (!companyId) {
+      return res.status(401).json({ error: "Not authenticated" });
+    }
+    const { data, error } = await supabaseAdmin
+      .from(table)
+      .select("id, name")
+      .eq("company_id", companyId)
+      .order("created_at", { ascending: false });
+
+    if (error) throw error;
+
+    return res.json({
+      clients: data || [],
+    });
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
+  }
+}
+
 export async function getOne(req, res) {
   try {
     const companyId = req.user?.company_id;

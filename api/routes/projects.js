@@ -7,6 +7,7 @@ import * as attachmentsController from "../controllers/attachmentsController.js"
 const router = Router();
 
 router.get("/", projectsController.list);
+router.get("/shortList", projectsController.shortList);
 router.get("/:id", projectsController.getOne);
 router.post("/", projectsController.create);
 router.put("/:id", projectsController.update);
