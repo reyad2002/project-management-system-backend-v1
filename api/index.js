@@ -34,7 +34,7 @@ const requireSupabase = (req, res, next) => {
   next();
 };
 
-const whitelist = ["http://localhost:3000"];
+const whitelist = ["http://localhost:3000" , "https://project-management-system-frontend-seven.vercel.app"];
 const corsOptions = {
   origin: (origin, cb) => {
     if (!origin || whitelist.includes(origin)) return cb(null, true);
