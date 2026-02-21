@@ -101,6 +101,81 @@ export async function getOne(req, res) {
   }
 }
 
+/**
+ * GET /api/clients/:id/payment-summary
+ * Returns for the client: total amount to pay (sum of project prices), amount paid, and remaining.
+ */
+export async function getPaymentSummary(req, res) {
+  try {
+    const companyId = req.user?.company_id;
+    const clientId = req.params.id;
+
+    if (!companyId) {
+      return res.status(401).json({ error: "Not authenticated" });
+    }
+    if (!clientId) {
+      return res.status(400).json({ error: "Missing client id" });
+    }
+
+    // Ensure client exists and belongs to company
+    const { data: client, error: clientErr } = await supabaseAdmin
+      .from(table)
+      .select("id")
+      .eq("id", clientId)
+      .eq("company_id", companyId)
+      .maybeSingle();
+
+    if (clientErr) throw clientErr;
+    if (!client) {
+      return res.status(404).json({ error: "Client not found" });
+    }
+
+    // All projects for this client (id, price)
+    const { data: projects, error: projectsErr } = await supabaseAdmin
+      .from("projects")
+      .select("id, price")
+      .eq("company_id", companyId)
+      .eq("client_id", clientId);
+
+    if (projectsErr) throw projectsErr;
+    const projectList = projects ?? [];
+    const projectIds = projectList.map((p) => p.id);
+
+    const totalAmountToPay = projectList.reduce(
+      (sum, p) => sum + Number(p.price ?? 0),
+      0
+    );
+
+    let amountPaid = 0;
+    if (projectIds.length > 0) {
+      const { data: payments, error: paymentsErr } = await supabaseAdmin
+        .from("payments")
+        .select("amount")
+        .eq("company_id", companyId)
+        .in("project_id", projectIds);
+
+      if (paymentsErr) throw paymentsErr;
+      amountPaid = (payments ?? []).reduce(
+        (sum, r) => sum + Number(r.amount ?? 0),
+        0
+      );
+    }
+
+    const remaining = Math.round((totalAmountToPay - amountPaid) * 100) / 100;
+    const roundedTotal = Math.round(totalAmountToPay * 100) / 100;
+    const roundedPaid = Math.round(amountPaid * 100) / 100;
+
+    return res.json({
+      client_id: clientId,
+      total_amount_to_pay: roundedTotal,
+      amount_paid: roundedPaid,
+      remaining,
+    });
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
+  }
+}
+
 export async function create(req, res) {
   try {
     const companyId = req.user?.company_id;

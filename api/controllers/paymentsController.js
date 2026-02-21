@@ -275,10 +275,10 @@ export async function update(req, res) {
 
       // total paid for final project
       const { data: rows, error: rowsErr } = await supabaseAdmin
-      .from("payments")
-      .select("amount")
-      .eq("company_id", companyId)
-      .eq("project_id", project_id);
+        .from("payments")
+        .select("amount")
+        .eq("company_id", companyId)
+        .eq("project_id", finalProjectId);
     
     if (rowsErr) throw rowsErr;
     
