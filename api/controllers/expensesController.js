@@ -89,10 +89,10 @@ export async function create(req, res) {
     const {  amount, expense_date, title, description, type } = req.body;
 
     // validate amount
-    const amt = Number(amount);
-    if (!Number.isFinite(amt) || amt <= 0) {
-      return res.status(400).json({ error: "amount must be a positive number" });
-    }
+    // const amt = Number(amount);
+    // if (!Number.isFinite(amt) || amt <= 0) {
+    //   return res.status(400).json({ error: "amount must be a positive number" });
+    // }
 
     if (!type) {
       return res.status(400).json({ error: "type is required" });
