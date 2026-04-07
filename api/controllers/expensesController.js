@@ -28,7 +28,9 @@ export async function list(req, res) {
       const t = String(type).trim();
       const allowed = ["direct", "operational"];
       if (!allowed.includes(t)) {
-        return res.status(400).json({ error: "Invalid type (direct | operational)" });
+        return res
+          .status(400)
+          .json({ error: "Invalid type (direct | operational)" });
       }
       query = query.eq("type", t);
     }
@@ -75,7 +77,9 @@ export async function getOne(req, res) {
     if (!data) return res.status(404).json({ error: "Not found" });
     res.json(data);
   } catch (err) {
-    res.status(err.code === "PGRST116" ? 404 : 500).json({ error: err.message });
+    res
+      .status(err.code === "PGRST116" ? 404 : 500)
+      .json({ error: err.message });
   }
 }
 
@@ -86,13 +90,13 @@ export async function create(req, res) {
       return res.status(401).json({ error: "Not authenticated" });
     }
 
-    const {  amount, expense_date, title, description, type } = req.body;
+    const { amount, expense_date, title, description, type } = req.body;
 
-    // validate amount
-    // const amt = Number(amount);
-    // if (!Number.isFinite(amt) || amt <= 0) {
-    //   return res.status(400).json({ error: "amount must be a positive number" });
-    // }
+    // validate amount (allow negative values)
+    const amt = Number(amount);
+    if (!Number.isFinite(amt)) {
+      return res.status(400).json({ error: "amount must be a valid number" });
+    }
 
     if (!type) {
       return res.status(400).json({ error: "type is required" });
@@ -100,7 +104,9 @@ export async function create(req, res) {
 
     // validate type (recommended)
     if (type != null && !expenseTypes.includes(type)) {
-      return res.status(400).json({ error: "Invalid type (direct | operational)" });
+      return res
+        .status(400)
+        .json({ error: "Invalid type (direct | operational)" });
     }
 
     // validate title (recommended)
@@ -145,8 +151,8 @@ export async function update(req, res) {
     let cleanAmount;
     if (amount !== undefined) {
       const amt = Number(amount);
-      if (!Number.isFinite(amt) || amt <= 0) {
-        return res.status(400).json({ error: "amount must be a positive number" });
+      if (!Number.isFinite(amt)) {
+        return res.status(400).json({ error: "amount must be a valid number" });
       }
       cleanAmount = amt;
     }
@@ -156,23 +162,28 @@ export async function update(req, res) {
     if (type !== undefined && type !== null) {
       const t = String(type).trim();
       if (!allowedTypes.includes(t)) {
-        return res.status(400).json({ error: "Invalid type (direct | operational)" });
+        return res
+          .status(400)
+          .json({ error: "Invalid type (direct | operational)" });
       }
     }
 
     const payload = {
       ...(cleanAmount !== undefined ? { amount: cleanAmount } : {}),
       ...(expense_date !== undefined ? { expense_date } : {}),
-      ...(title !== undefined ? { title: title ? String(title).trim() : null } : {}),
+      ...(title !== undefined
+        ? { title: title ? String(title).trim() : null }
+        : {}),
       ...(description !== undefined
         ? { description: description ? String(description).trim() : null }
         : {}),
-      ...(type !== undefined ? { type: type ? String(type).trim() : null } : {}),
-      
+      ...(type !== undefined
+        ? { type: type ? String(type).trim() : null }
+        : {}),
     };
 
     const clean = Object.fromEntries(
-      Object.entries(payload).filter(([, v]) => v !== undefined)
+      Object.entries(payload).filter(([, v]) => v !== undefined),
     );
 
     if (Object.keys(clean).length === 0) {
