@@ -37,14 +37,7 @@ export async function list(req, res) {
 
     // validate & filter status
     if (status) {
-      const allowedStatuses = [
-        "draft",
-        "active",
-        "on_hold",
-        "done",
-        "cancelled",
-      ];
-      if (!allowedStatuses.includes(status)) {
+      if (!statuses.includes(status)) {
         return res.status(400).json({ error: "Invalid status" });
       }
       query = query.eq("status", status);
@@ -223,8 +216,7 @@ export async function update(req, res) {
     }
 
     // validate status if provided
-    const allowedStatuses = ["draft", "active", "on_hold", "done", "cancelled"];
-    if (status != null && !allowedStatuses.includes(status)) {
+    if (status != null && !statuses.includes(status)) {
       return res.status(400).json({ error: "Invalid status" });
     }
 
