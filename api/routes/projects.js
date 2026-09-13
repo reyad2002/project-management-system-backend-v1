@@ -4,6 +4,9 @@ import * as paymentsController from "../controllers/paymentsController.js";
 import * as expensesController from "../controllers/expensesController.js";
 import * as attachmentsController from "../controllers/attachmentsController.js";
 import * as phasesController from "../controllers/phasesController.js";
+import * as projectMembersController from "../controllers/projectMembersController.js";
+import * as tasksController from "../controllers/tasksController.js";
+import * as timelineController from "../controllers/timelineController.js";
 
 const router = Router();
 
@@ -21,5 +24,19 @@ router.post("/:id/phases", phasesController.createByProject);
 router.get("/:id/phases/:phaseId", phasesController.getOneByProject);
 router.put("/:id/phases/:phaseId", phasesController.updateByProject);
 router.delete("/:id/phases/:phaseId", phasesController.removeByProject);
+
+// Project team members
+router.get("/:projectId/members", projectMembersController.list);
+router.post("/:projectId/members", projectMembersController.create);
+router.put("/:projectId/members/:memberId", projectMembersController.update);
+router.delete("/:projectId/members/:memberId", projectMembersController.remove);
+
+// Tasks scoped by project id
+router.get("/:id/tasks", tasksController.listByProject);
+router.post("/:id/tasks", tasksController.createByProject);
+router.post("/:id/tasks/reorder", tasksController.reorder);
+
+// Timeline / Gantt
+router.get("/:id/timeline", timelineController.getProjectTimeline);
 
 export default router;

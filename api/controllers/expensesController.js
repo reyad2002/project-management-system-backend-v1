@@ -2,13 +2,59 @@ import { supabaseAdmin } from "../../db_connection.js";
 
 const table = "expenses";
 const projectsTable = "projects";
+const phasesTable = "phases";
 const expenseTypes = ["direct", "operational"];
+const costCategories = [
+  "labor",
+  "materials",
+  "subcontractor",
+  "software",
+  "travel",
+  "marketing",
+  "rent",
+  "utilities",
+  "other",
+];
+
+/**
+ * Ensure phase_id (if provided) belongs to project_id (if provided).
+ * Returns { valid: true } or { valid: false, error }.
+ */
+async function validatePhaseBelongsToProject(companyId, projectId, phaseId) {
+  if (!phaseId) return { valid: true };
+  if (!projectId) {
+    return { valid: false, error: "Phase does not belong to the specified project" };
+  }
+  const { data, error } = await supabaseAdmin
+    .from(phasesTable)
+    .select("id")
+    .eq("id", phaseId)
+    .eq("company_id", companyId)
+    .eq("project_id", projectId)
+    .maybeSingle();
+  if (error) throw error;
+  if (!data) {
+    return { valid: false, error: "Phase does not belong to the specified project" };
+  }
+  return { valid: true };
+}
+
 export async function list(req, res) {
   try {
     const companyId = req.user?.company_id;
     if (!companyId) return res.status(401).json({ error: "Not authenticated" });
 
-    const { type, q, from_date, to_date, page = "1", limit = "20" } = req.query;
+    const {
+      type,
+      q,
+      from_date,
+      to_date,
+      project_id,
+      vendor_id,
+      cost_category,
+      page = "1",
+      limit = "20",
+    } = req.query;
 
     const pageNum = Math.max(parseInt(page, 10) || 1, 1);
     const limitNum = Math.min(Math.max(parseInt(limit, 10) || 20, 1), 100);
@@ -26,13 +72,22 @@ export async function list(req, res) {
     // type filter
     if (type && String(type).trim()) {
       const t = String(type).trim();
-      const allowed = ["direct", "operational"];
-      if (!allowed.includes(t)) {
+      if (!expenseTypes.includes(t)) {
         return res
           .status(400)
           .json({ error: "Invalid type (direct | operational)" });
       }
       query = query.eq("type", t);
+    }
+
+    if (project_id) query = query.eq("project_id", project_id);
+    if (vendor_id) query = query.eq("vendor_id", vendor_id);
+    if (cost_category) {
+      const c = String(cost_category).trim();
+      if (!costCategories.includes(c)) {
+        return res.status(400).json({ error: "Invalid cost_category" });
+      }
+      query = query.eq("cost_category", c);
     }
 
     // optional date range
@@ -90,7 +145,17 @@ export async function create(req, res) {
       return res.status(401).json({ error: "Not authenticated" });
     }
 
-    const { amount, expense_date, title, description, type } = req.body;
+    const {
+      amount,
+      expense_date,
+      title,
+      description,
+      type,
+      project_id,
+      phase_id,
+      vendor_id,
+      cost_category,
+    } = req.body;
 
     // validate amount (allow negative values)
     const amt = Number(amount);
@@ -114,6 +179,29 @@ export async function create(req, res) {
       return res.status(400).json({ error: "title is required" });
     }
 
+    if (cost_category != null && !costCategories.includes(cost_category)) {
+      return res.status(400).json({ error: "Invalid cost_category" });
+    }
+
+    // project_id / vendor_id ownership checks (if provided)
+    if (project_id) {
+      const { data: project, error: projectErr } = await supabaseAdmin
+        .from(projectsTable)
+        .select("id")
+        .eq("id", project_id)
+        .eq("company_id", companyId)
+        .maybeSingle();
+      if (projectErr) throw projectErr;
+      if (!project) {
+        return res.status(400).json({ error: "Invalid project_id for this company" });
+      }
+    }
+
+    const phaseCheck = await validatePhaseBelongsToProject(companyId, project_id, phase_id);
+    if (!phaseCheck.valid) {
+      return res.status(400).json({ error: phaseCheck.error });
+    }
+
     const payload = {
       company_id: companyId,
       amount: amt,
@@ -121,6 +209,10 @@ export async function create(req, res) {
       title: String(title).trim(),
       description: description ? String(description).trim() : null,
       type: type ?? expenseTypes[0], // default if you want
+      project_id: project_id ?? null,
+      phase_id: phase_id ?? null,
+      vendor_id: vendor_id ?? null,
+      cost_category: cost_category ?? "other",
     };
 
     const { data, error } = await supabaseAdmin
@@ -145,7 +237,26 @@ export async function update(req, res) {
     if (!companyId) return res.status(401).json({ error: "Not authenticated" });
     if (!id) return res.status(400).json({ error: "Missing id" });
 
-    const { amount, expense_date, title, description, type } = req.body;
+    const {
+      amount,
+      expense_date,
+      title,
+      description,
+      type,
+      project_id,
+      phase_id,
+      vendor_id,
+      cost_category,
+    } = req.body;
+
+    const { data: existing, error: existingErr } = await supabaseAdmin
+      .from(table)
+      .select("id, project_id, phase_id")
+      .eq("id", id)
+      .eq("company_id", companyId)
+      .maybeSingle();
+    if (existingErr) throw existingErr;
+    if (!existing) return res.status(404).json({ error: "Not found" });
 
     // validate amount only if provided
     let cleanAmount;
@@ -158,13 +269,39 @@ export async function update(req, res) {
     }
 
     // validate type only if provided
-    const allowedTypes = ["direct", "operational"];
     if (type !== undefined && type !== null) {
       const t = String(type).trim();
-      if (!allowedTypes.includes(t)) {
+      if (!expenseTypes.includes(t)) {
         return res
           .status(400)
           .json({ error: "Invalid type (direct | operational)" });
+      }
+    }
+
+    if (cost_category !== undefined && cost_category !== null && !costCategories.includes(cost_category)) {
+      return res.status(400).json({ error: "Invalid cost_category" });
+    }
+
+    if (project_id !== undefined && project_id !== null) {
+      const { data: project, error: projectErr } = await supabaseAdmin
+        .from(projectsTable)
+        .select("id")
+        .eq("id", project_id)
+        .eq("company_id", companyId)
+        .maybeSingle();
+      if (projectErr) throw projectErr;
+      if (!project) {
+        return res.status(400).json({ error: "Invalid project_id for this company" });
+      }
+    }
+
+    // resolve final project/phase to validate phase-belongs-to-project relationship
+    const finalProjectId = project_id !== undefined ? project_id : existing.project_id;
+    const finalPhaseId = phase_id !== undefined ? phase_id : existing.phase_id;
+    if (finalPhaseId) {
+      const phaseCheck = await validatePhaseBelongsToProject(companyId, finalProjectId, finalPhaseId);
+      if (!phaseCheck.valid) {
+        return res.status(400).json({ error: phaseCheck.error });
       }
     }
 
@@ -180,6 +317,10 @@ export async function update(req, res) {
       ...(type !== undefined
         ? { type: type ? String(type).trim() : null }
         : {}),
+      ...(project_id !== undefined ? { project_id } : {}),
+      ...(phase_id !== undefined ? { phase_id } : {}),
+      ...(vendor_id !== undefined ? { vendor_id } : {}),
+      ...(cost_category !== undefined ? { cost_category } : {}),
     };
 
     const clean = Object.fromEntries(

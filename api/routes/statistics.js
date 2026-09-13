@@ -9,5 +9,8 @@ router.get("/overview", statisticsController.getOverview);
 router.get("/projects", statisticsController.getProjectsStats);
 router.get("/payments", statisticsController.getPaymentsStats);
 router.get("/expenses", statisticsController.getExpensesStats);
+router.get("/ar-aging", statisticsController.getArAging);
+router.get("/ap-aging", statisticsController.getApAging);
+router.get("/project-profitability", statisticsController.getProjectProfitability);
 
 export default router;

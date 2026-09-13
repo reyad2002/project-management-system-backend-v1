@@ -19,6 +19,11 @@ export async function requireAuth(req, res, next) {
     }
 
     const payload = jwt.verify(token, secret);
+
+    if (payload.scope === "portal") {
+      return res.status(403).json({ error: "Invalid token scope for this endpoint" });
+    }
+
     const userId = payload.sub ?? payload.userId ?? payload.id;
     if (!userId) {
       return res.status(401).json({ error: "Invalid token" });

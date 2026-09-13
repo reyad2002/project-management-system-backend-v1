@@ -21,7 +21,16 @@ import paymentsRouter from "./routes/payments.js";
 import expensesRouter from "./routes/expenses.js";
 import attachmentsRouter from "./routes/attachments.js";
 import statisticsRouter from "./routes/statistics.js";
+import invoicesRouter from "./routes/invoices.js";
+import vendorsRouter from "./routes/vendors.js";
+import vendorBillsRouter from "./routes/vendor-bills.js";
+import teamRouter from "./routes/team.js";
+import tasksRouter from "./routes/tasks.js";
+import checklistItemsRouter from "./routes/checklist-items.js";
+import portalAuthRouter from "./routes/portalAuth.js";
+import portalRouter from "./routes/portal.js";
 import { requireAuth } from "./middleware/auth.js";
+import { requirePortalAuth } from "./middleware/portalAuth.js";
 const app = express();
 dotenv.config();
 
@@ -64,6 +73,14 @@ app.use("/api/payments", requireSupabase, requireAuth, paymentsRouter);
 app.use("/api/expenses", requireSupabase, requireAuth, expensesRouter);
 app.use("/api/attachments", requireSupabase, requireAuth, attachmentsRouter);
 app.use("/api/statistics", requireSupabase, requireAuth, statisticsRouter);
+app.use("/api/invoices", requireSupabase, requireAuth, invoicesRouter);
+app.use("/api/vendors", requireSupabase, requireAuth, vendorsRouter);
+app.use("/api/vendor-bills", requireSupabase, requireAuth, vendorBillsRouter);
+app.use("/api/team", requireSupabase, requireAuth, teamRouter);
+app.use("/api/tasks", requireSupabase, requireAuth, tasksRouter);
+app.use("/api/checklist-items", requireSupabase, requireAuth, checklistItemsRouter);
+app.use("/api/portal/auth", requireSupabase, portalAuthRouter);
+app.use("/api/portal", requireSupabase, requirePortalAuth, portalRouter);
 
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);

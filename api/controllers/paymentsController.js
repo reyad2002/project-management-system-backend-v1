@@ -1,8 +1,40 @@
 import { supabaseAdmin } from "../../db_connection.js";
+import { paymentMethods, recalcInvoiceTotals } from "../lib/finance.js";
 
 const table = "payments";
 const projectsTable = "projects";
-const paymentMethods = ["cash", "bank_transfer", "credit_card", "other"];
+const invoicesTable = "invoices";
+const paymentTypes = ["advance", "invoice_settlement"];
+
+/**
+ * Validate an invoice_id against the given project and current payment amount.
+ * Returns { invoice } on success, or { errorStatus, errorMessage } on failure.
+ */
+async function validateInvoiceForPayment(companyId, invoiceId, projectId, amount, excludePaymentAmount = 0) {
+  const { data: invoice, error } = await supabaseAdmin
+    .from(invoicesTable)
+    .select("id, project_id, status, total_amount, paid_amount")
+    .eq("id", invoiceId)
+    .eq("company_id", companyId)
+    .maybeSingle();
+  if (error) throw error;
+  if (!invoice) {
+    return { errorStatus: 400, errorMessage: "Invalid invoice_id for this company" };
+  }
+  if (String(invoice.project_id) !== String(projectId)) {
+    return { errorStatus: 400, errorMessage: "invoice_id does not belong to the specified project" };
+  }
+  if (invoice.status === "cancelled") {
+    return { errorStatus: 409, errorMessage: "Cannot add payment to a cancelled invoice" };
+  }
+  const alreadyPaid = Number(invoice.paid_amount) - Number(excludePaymentAmount);
+  const remaining = Number(invoice.total_amount) - alreadyPaid;
+  if (amount > remaining) {
+    return { errorStatus: 400, errorMessage: "Payment amount exceeds invoice remaining balance" };
+  }
+  return { invoice };
+}
+
 export async function list(req, res) {
   try {
     const companyId = req.user?.company_id;
@@ -10,7 +42,7 @@ export async function list(req, res) {
       return res.status(401).json({ error: "Not authenticated" });
     }
 
-    const { project_id, client_id, page = "1", limit = "20" } = req.query;
+    const { project_id, client_id, invoice_id, page = "1", limit = "20" } = req.query;
 
     let query = supabaseAdmin
       .from(table)
@@ -21,6 +53,10 @@ export async function list(req, res) {
 
     if (project_id) {
       query = query.eq("project_id", project_id);
+    }
+
+    if (invoice_id) {
+      query = query.eq("invoice_id", invoice_id);
     }
 
     // Filter by client: payments for projects that belong to this client
@@ -117,7 +153,7 @@ export async function create(req, res) {
       return res.status(401).json({ error: "Not authenticated" });
     }
 
-    const { project_id, amount, payment_date, payment_method, notes } = req.body;
+    const { project_id, amount, payment_date, payment_method, notes, invoice_id, type } = req.body;
 
     if (!project_id) {
       return res.status(400).json({ error: "project_id is required" });
@@ -136,6 +172,10 @@ export async function create(req, res) {
       return res.status(400).json({ error: "Invalid payment_method" });
     }
 
+    if (type !== undefined && type !== null && !paymentTypes.includes(type)) {
+      return res.status(400).json({ error: "Invalid type (advance | invoice_settlement)" });
+    }
+
     // ✅ get project (id + price) in ONE query and ensure company ownership
     const { data: project, error: projectErr } = await supabaseAdmin
       .from(projectsTable)
@@ -149,6 +189,18 @@ export async function create(req, res) {
       return res.status(400).json({ error: "Invalid project_id for this company" });
     }
 
+    // ✅ invoice_id validation (cancelled invoice / overpayment / project match) —
+    // checked before the generic project-price cap so the more specific, actionable
+    // error surfaces when a payment would violate both.
+    let finalInvoiceId = null;
+    if (invoice_id) {
+      const check = await validateInvoiceForPayment(companyId, invoice_id, project_id, amt);
+      if (check.errorMessage) {
+        return res.status(check.errorStatus).json({ error: check.errorMessage });
+      }
+      finalInvoiceId = invoice_id;
+    }
+
     const projectPrice = Number(project.price ?? 0);
 
     // ✅ sum existing payments for this project
@@ -157,9 +209,9 @@ export async function create(req, res) {
     .select("amount")
     .eq("company_id", companyId)
     .eq("project_id", project_id);
-  
+
   if (rowsErr) throw rowsErr;
-  
+
   const alreadyPaid = (rows || []).reduce((sum, r) => sum + Number(r.amount || 0), 0);
 
     // ✅ enforce total payments <= project price (if price is set)
@@ -169,12 +221,16 @@ export async function create(req, res) {
       });
     }
 
+    const finalType = type ?? (finalInvoiceId ? "invoice_settlement" : "advance");
+
     const payload = {
       company_id: companyId,
       project_id,
+      invoice_id: finalInvoiceId,
       amount: amt,
       payment_date: payment_date ?? new Date().toISOString().slice(0, 10), // default today YYYY-MM-DD
       payment_method,
+      type: finalType,
       notes: notes ? String(notes).trim() : null,
     };
 
@@ -185,6 +241,10 @@ export async function create(req, res) {
       .single();
 
     if (error) throw error;
+
+    if (finalInvoiceId) {
+      await recalcInvoiceTotals(finalInvoiceId);
+    }
 
     return res.status(201).json(data);
   } catch (err) {
@@ -204,12 +264,12 @@ export async function update(req, res) {
       return res.status(400).json({ error: "Missing id" });
     }
 
-    const { project_id, amount, payment_date, payment_method, notes } = req.body;
+    const { project_id, amount, payment_date, payment_method, notes, invoice_id, type } = req.body;
 
     // ✅ fetch existing payment (must belong to same company)
     const { data: existing, error: existingErr } = await supabaseAdmin
       .from(table)
-      .select("id, company_id, project_id, amount")
+      .select("id, company_id, project_id, amount, invoice_id")
       .eq("id", id)
       .eq("company_id", companyId)
       .maybeSingle();
@@ -225,6 +285,10 @@ export async function update(req, res) {
       if (!paymentMethods.includes(payment_method)) {
         return res.status(400).json({ error: "Invalid payment_method" });
       }
+    }
+
+    if (type !== undefined && type !== null && !paymentTypes.includes(type)) {
+      return res.status(400).json({ error: "Invalid type (advance | invoice_settlement)" });
     }
 
     // ✅ validate amount ONLY if provided
@@ -256,6 +320,28 @@ export async function update(req, res) {
       }
     }
 
+    // ✅ resolve final invoice_id and validate it (cancelled / overpayment / project match) —
+    // checked before the generic project-price cap so the more specific, actionable
+    // error surfaces when a payment would violate both.
+    const invoiceIdChanging = invoice_id !== undefined;
+    const finalInvoiceId = invoiceIdChanging ? invoice_id : existing.invoice_id;
+
+    if (finalInvoiceId) {
+      // if this payment already counted against this same invoice, exclude its current amount
+      const excludeAmount =
+        String(existing.invoice_id) === String(finalInvoiceId) ? Number(existing.amount ?? 0) : 0;
+      const check = await validateInvoiceForPayment(
+        companyId,
+        finalInvoiceId,
+        finalProjectId,
+        finalAmount,
+        excludeAmount
+      );
+      if (check.errorMessage) {
+        return res.status(check.errorStatus).json({ error: check.errorMessage });
+      }
+    }
+
     // ✅ check project price limit if we changed amount or project_id
     if (amount !== undefined || project_id !== undefined) {
       // get project price
@@ -279,11 +365,11 @@ export async function update(req, res) {
         .select("amount")
         .eq("company_id", companyId)
         .eq("project_id", finalProjectId);
-    
+
     if (rowsErr) throw rowsErr;
-    
+
     const alreadyPaid = (rows || []).reduce((sum, r) => sum + Number(r.amount || 0), 0);
-    
+
 
       // IMPORTANT: remove existing payment amount from total IF it's in same project
       // because paidTotal currently includes this payment's old amount
@@ -299,12 +385,17 @@ export async function update(req, res) {
       }
     }
 
+    const finalType =
+      type !== undefined ? type : invoiceIdChanging ? (finalInvoiceId ? "invoice_settlement" : "advance") : undefined;
+
     // ✅ build update payload (partial)
     const payload = {
       ...(project_id !== undefined ? { project_id: finalProjectId } : {}),
       ...(newAmount !== undefined ? { amount: newAmount } : {}),
       ...(payment_date !== undefined ? { payment_date } : {}),
       ...(payment_method !== undefined ? { payment_method } : {}),
+      ...(invoiceIdChanging ? { invoice_id: finalInvoiceId } : {}),
+      ...(finalType !== undefined ? { type: finalType } : {}),
       ...(notes !== undefined ? { notes: notes ? String(notes).trim() : null } : {}),
       updated_at: new Date().toISOString(), // لو عندك العمود ده
     };
@@ -327,6 +418,15 @@ export async function update(req, res) {
 
     if (error) throw error;
     if (!data) return res.status(404).json({ error: "Not found" });
+
+    // recalc whichever invoices were affected (old one if unlinked/changed, new one always)
+    const oldInvoiceId = existing.invoice_id;
+    if (oldInvoiceId && String(oldInvoiceId) !== String(finalInvoiceId)) {
+      await recalcInvoiceTotals(oldInvoiceId);
+    }
+    if (finalInvoiceId) {
+      await recalcInvoiceTotals(finalInvoiceId);
+    }
 
     return res.json(data);
   } catch (err) {
@@ -352,11 +452,16 @@ export async function remove(req, res) {
       .delete()
       .eq("id", id)
       .eq("company_id", companyId)
-      .select("id")
+      .select("id, invoice_id")
       .maybeSingle();
 
     if (error) throw error;
     if (!data) return res.status(404).json({ error: "Not found" });
+
+    if (data.invoice_id) {
+      await recalcInvoiceTotals(data.invoice_id);
+    }
+
     return res.status(204).json({ message: "Payment deleted successfully" });
   } catch (err) {
     return res.status(500).json({ error: err.message });
