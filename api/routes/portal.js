@@ -6,6 +6,7 @@ import * as projectLinksController from "../controllers/projectLinksController.j
 import * as tasksController from "../controllers/tasksController.js";
 import * as credentialsController from "../controllers/credentialsController.js";
 import * as feedbackController from "../controllers/feedbackController.js";
+import * as projectFilesController from "../controllers/projectFilesController.js";
 import { revealRateLimit } from "../middleware/revealRateLimit.js";
 
 const router = Router();
@@ -40,5 +41,12 @@ router.post("/credentials/:id/reveal", revealRateLimit, credentialsController.po
 
 // Micro-feedback
 router.post("/feedback", feedbackController.portalSubmit);
+
+// Files
+router.post("/projects/:id/files", projectFilesController.portalCreateByProject);
+router.get("/projects/:id/files", projectFilesController.portalListByProject);
+router.patch("/files/:fileId/status", projectFilesController.portalUpdateStatus);
+router.get("/files/:fileId/comments", projectFilesController.portalListComments);
+router.post("/files/:fileId/comments", projectFilesController.portalCreateComment);
 
 export default router;

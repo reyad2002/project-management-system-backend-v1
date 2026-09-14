@@ -46,3 +46,49 @@ backend code — the routes/controllers in `api/` for these features assume the 
 exist. `10_alter_tasks_add_source_and_client_assignee.sql` depends on `08_create_meetings.sql`
 (FK on `tasks.source_id` → `meetings.id`) and replaces the `v_user_workload` view, so it must run
 after both `08` and after `v_user_workload` already exists.
+
+**Status as of 2026-09-14: 07-12 confirmed live** (`notifications`, `meetings`, `project_links`,
+the `tasks` alter, `credentials`, `feedback` all queried successfully against production).
+
+# Project Files / Recurring Billing / Investments — table owned elsewhere, only 13 is ours
+
+`project_files`, `project_file_comments`, `recurring_revenue`, `recurring_expenses`,
+`investments` and `investment_returns` were requested in the same breath as the backend work
+below, but **the tables were created directly against Supabase by whoever owns the DB side of
+this feature before this backend code was written** — confirmed live on 2026-09-14 via PostgREST
+introspection (`GET {SUPABASE_URL}/rest/v1/` returns each table's real columns/enums). An initial
+draft of migrations 13-16 here guessed at a schema and got it wrong in several places (column
+names, required-vs-nullable, and enum value sets all differ from the guess); that draft has been
+deleted. **All `api/controllers/{projectFiles,recurringRevenue,recurringExpenses,investments}
+Controller.js` code targets the real live schema**, verified by creating and cleaning up a real
+row through every new endpoint (not just introspection). Notable real-schema quirks worth
+knowing if you're touching this code:
+
+- `project_files.uploaded_by_type` / `project_file_comments.author_type` use `'client'`, not
+  `'client_portal_user'` (that longer string is only the `notifications.recipient_type` value).
+- `project_files.status` enum is `pending_review` (not `pending`) / `approved` / `needs_changes` /
+  `rejected`.
+- `recurring_revenue` has `client_id` (required) and `project_id` (optional) — not the other way
+  around — plus a required `type` enum (`hosting`/`maintenance`/`other`) and `currency`; there is
+  no `payment_method` or `created_by` column.
+- `recurring_expenses` uses `name` (not `title`) and `linked_project_id` (not `project_id`), a
+  required `type` enum (`hosting_cost`/`ai_subscription`/`tool_subscription`/`other`), and its
+  `status` enum is **only** `active`/`cancelled` — there is no `overdue` value, unlike
+  `recurring_revenue`. `recurringExpensesController.overdue` computes overdue by date instead of
+  a status.
+- Neither `recurring_revenue` nor `recurring_expenses` has a `last_reminder_sent_at` (or similar)
+  column, so `api/lib/recurringReminders.js` gets per-cycle idempotency by checking existing
+  `notifications` rows instead (see its comments) rather than a dedicated flag.
+- `investments` uses `name`, `investment_date`, `expected_return`, `return_cycle`
+  (`one_time`/`monthly`/`yearly`), `status` (`active`/`closed`) — there is no `category` or
+  `project_id` column. `investment_returns` has no `notes`/`created_by`.
+
+**`13_extend_notifications_for_files_and_recurring.sql` is the one migration this feature still
+needs and is ready to run as-is** — it only extends `notifications.type` /
+`notifications.related_type` (owned by this repo) to cover the three new event types
+(`file_uploaded`, `file_status_changed`, `recurring_payment_due`) and one new related_type
+(`file`) — `recurring_revenue`/`recurring_expense` were already added to `related_type` by the DB
+side. Until this runs, uploading a file or changing a file's status **will still succeed** (the
+notification call is wrapped so a notification failure can't roll back or fail the response) but
+won't actually notify anyone; the daily recurring-billing reminder job will similarly no-op on
+the reminder step until this is applied.

@@ -11,6 +11,7 @@ import * as meetingsController from "../controllers/meetingsController.js";
 import * as projectLinksController from "../controllers/projectLinksController.js";
 import * as credentialsController from "../controllers/credentialsController.js";
 import * as feedbackController from "../controllers/feedbackController.js";
+import * as projectFilesController from "../controllers/projectFilesController.js";
 
 const router = Router();
 
@@ -57,5 +58,9 @@ router.get("/:id/credentials", credentialsController.listByProject);
 
 // Feedback scoped by project id
 router.get("/:id/feedback", feedbackController.listByProject);
+
+// Files scoped by project id
+router.post("/:id/files", projectFilesController.createByProject);
+router.get("/:id/files", projectFilesController.listByProject);
 
 export default router;
