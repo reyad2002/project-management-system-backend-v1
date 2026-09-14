@@ -209,13 +209,13 @@ export async function createNote(req, res) {
     if (error) throw error;
 
     const createdTasks = [];
-    const clientNotifications = [];
+    const assigneeNotifications = [];
     for (const taskInput of taskInputs) {
       const result = await createTaskForProject(companyId, userId, project, taskInput);
       if (result.error) return res.status(result.status).json({ error: `Action item "${taskInput.title}": ${result.error}` });
       createdTasks.push(result.task);
       if (result.notifyClientAssigneeId) {
-        clientNotifications.push({
+        assigneeNotifications.push({
           company_id: companyId,
           recipient_type: "client_portal_user",
           recipient_id: result.notifyClientAssigneeId,
@@ -225,9 +225,20 @@ export async function createNote(req, res) {
           related_type: "task",
           related_id: result.task.id,
         });
+      } else if (result.task.assignee_type === "team_member" && result.task.assignee_id) {
+        assigneeNotifications.push({
+          company_id: companyId,
+          recipient_type: "team_member",
+          recipient_id: result.task.assignee_id,
+          type: "action_item_assigned",
+          title: `New action item assigned: ${result.task.title}`,
+          body: null,
+          related_type: "task",
+          related_id: result.task.id,
+        });
       }
     }
-    if (clientNotifications.length > 0) await createNotifications(clientNotifications);
+    if (assigneeNotifications.length > 0) await createNotifications(assigneeNotifications);
 
     const attendees = await getAttendeesForMeeting(meetingId);
     const portalAttendees = attendees.filter((a) => a.attendee_type === "client_portal_user");

@@ -8,8 +8,12 @@ const clientsTable = "clients";
 const INVITE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 const PORTAL_URL = process.env.CLIENT_PORTAL_URL || "https://project-management-system-frontend-seven.vercel.app";
 
+function buildInviteLink(token) {
+  return `${PORTAL_URL}/portal/accept-invite?token=${token}`;
+}
+
 async function sendPortalInviteEmail(email, name, token) {
-  const link = `${PORTAL_URL}/portal/accept-invite?token=${token}`;
+  const link = buildInviteLink(token);
   await sendEmail({
     to: email,
     subject: "You're invited to the Client Portal",
@@ -40,13 +44,24 @@ export async function list(req, res) {
 
     const { data, error } = await supabaseAdmin
       .from(table)
-      .select("id, name, email, status, last_login_at, created_at")
+      .select("id, name, email, status, last_login_at, created_at, invite_token, invite_expires_at")
       .eq("company_id", companyId)
       .eq("client_id", clientId)
       .order("created_at", { ascending: false });
     if (error) throw error;
 
-    return res.json({ portalUsers: data || [] });
+    const now = Date.now();
+    const portalUsers = (data || []).map(({ invite_token, invite_expires_at, ...rest }) => {
+      const isPendingInvite =
+        rest.status === "invited" && invite_token && invite_expires_at && new Date(invite_expires_at).getTime() > now;
+      return {
+        ...rest,
+        invite_link: isPendingInvite ? buildInviteLink(invite_token) : null,
+        invite_expires_at: rest.status === "invited" ? invite_expires_at : undefined,
+      };
+    });
+
+    return res.json({ portalUsers });
   } catch (err) {
     return res.status(500).json({ error: err.message });
   }
@@ -110,10 +125,8 @@ export async function create(req, res) {
       console.error(`[portal-invite] failed to email ${normalizedEmail}:`, emailErr.message);
     }
 
-    const response = { ...data };
-    if (process.env.NODE_ENV !== "production") {
-      response.invite_token = inviteToken; // dev convenience only
-    }
+    // Exposed so staff can copy/send the link manually (e.g. WhatsApp) as a backup to the auto-email.
+    const response = { ...data, invite_link: buildInviteLink(inviteToken) };
 
     return res.status(201).json(response);
   } catch (err) {
