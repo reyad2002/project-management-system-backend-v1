@@ -1,4 +1,6 @@
 import { supabaseAdmin } from "../../db_connection.js";
+import { createNotifications } from "../lib/notifications.js";
+import { getPortalProject } from "../lib/portal.js";
 
 const projectsTable = "projects";
 const phasesTable = "phases";
@@ -6,15 +8,7 @@ const invoicesTable = "invoices";
 const paymentsTable = "payments";
 
 async function getOwnProject(companyId, clientId, projectId) {
-  const { data, error } = await supabaseAdmin
-    .from(projectsTable)
-    .select("*")
-    .eq("id", projectId)
-    .eq("company_id", companyId)
-    .eq("client_id", clientId)
-    .maybeSingle();
-  if (error) throw error;
-  return data;
+  return getPortalProject(companyId, clientId, projectId, "*");
 }
 
 export async function listProjects(req, res) {
@@ -184,6 +178,28 @@ export async function approvePhase(req, res) {
       .select("*")
       .maybeSingle();
     if (updateErr) throw updateErr;
+
+    const { data: members, error: membersErr } = await supabaseAdmin
+      .from("project_members")
+      .select("user_id")
+      .eq("company_id", companyId)
+      .eq("project_id", project.id);
+    if (membersErr) throw membersErr;
+
+    if (members && members.length > 0) {
+      await createNotifications(
+        members.map((m) => ({
+          company_id: companyId,
+          recipient_type: "team_member",
+          recipient_id: m.user_id,
+          type: "phase_approved",
+          title: `Phase approved: ${data.title ?? ""}`,
+          body: null,
+          related_type: "phase",
+          related_id: data.id,
+        }))
+      );
+    }
 
     return res.json(data);
   } catch (err) {

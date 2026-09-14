@@ -6,6 +6,7 @@ const paymentsTable = "payments";
 const expensesTable = "expenses";
 const invoicesTable = "invoices";
 const vendorBillsTable = "vendor_bills";
+const feedbackTable = "feedback";
 
 const projectStatuses = [
   "draft",
@@ -38,6 +39,7 @@ export async function getDashboard(req, res) {
       projectsByStatus,
       paymentsData,
       expensesData,
+      recentFeedbackAverage,
     ] = await Promise.all([
       supabaseAdmin
         .from(clientsTable)
@@ -50,6 +52,7 @@ export async function getDashboard(req, res) {
       getProjectsByStatus(companyId),
       getPaymentsSummary(companyId, from_date, to_date),
       getExpensesSummary(companyId, from_date, to_date),
+      getRecentFeedbackAverage(companyId),
     ]);
 
     if (clientsCount.error) throw clientsCount.error;
@@ -78,6 +81,7 @@ export async function getDashboard(req, res) {
         totalPaymentsCount: paymentsData.count,
         totalExpenses: expensesData.total,
         totalExpensesCount: expensesData.count,
+        recentFeedbackAverage,
         dateRange: from_date || to_date ? { from_date: from_date ?? null, to_date: to_date ?? null } : null,
       },
       projectsByStatus: projectsByStatus.data,
@@ -428,6 +432,21 @@ async function getProjectsByStatus(companyId) {
   });
 
   return { data: counts };
+}
+
+/**
+ * Average of the company's 5 most recent micro-feedback ratings (across all projects).
+ */
+async function getRecentFeedbackAverage(companyId) {
+  const { data, error } = await supabaseAdmin
+    .from(feedbackTable)
+    .select("rating")
+    .eq("company_id", companyId)
+    .order("created_at", { ascending: false })
+    .limit(5);
+  if (error) throw error;
+  if (!data || data.length === 0) return null;
+  return round2(data.reduce((sum, r) => sum + Number(r.rating ?? 0), 0) / data.length);
 }
 
 async function getPaymentsSummary(companyId, fromDate, toDate) {

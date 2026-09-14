@@ -1,17 +1,26 @@
 import crypto from "crypto";
 import { supabaseAdmin } from "../../db_connection.js";
+import { sendEmail } from "../lib/email.js";
 
 const table = "client_portal_users";
 const clientsTable = "clients";
 
 const INVITE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+const PORTAL_URL = process.env.CLIENT_PORTAL_URL || "https://project-management-system-frontend-seven.vercel.app";
 
-/**
- * Placeholder for actual delivery (SMTP/Resend/SendGrid, etc.) — no email provider is
- * configured in this project yet, so this only logs. Wire a real provider here later.
- */
-function sendPortalInviteEmail(email, name, token) {
-  console.log(`[portal-invite] would email ${email} (${name}) invite token: ${token}`);
+async function sendPortalInviteEmail(email, name, token) {
+  const link = `${PORTAL_URL}/portal/accept-invite?token=${token}`;
+  await sendEmail({
+    to: email,
+    subject: "You're invited to the Client Portal",
+    html: `
+      <p>Hi ${name},</p>
+      <p>You've been invited to the client portal. Click the link below to set your password and log in:</p>
+      <p><a href="${link}">${link}</a></p>
+      <p>This link expires in 7 days.</p>
+    `,
+    text: `Hi ${name},\n\nYou've been invited to the client portal. Set your password here: ${link}\n\nThis link expires in 7 days.`,
+  });
 }
 
 export async function list(req, res) {
@@ -94,7 +103,12 @@ export async function create(req, res) {
       throw error;
     }
 
-    sendPortalInviteEmail(normalizedEmail, data.name, inviteToken);
+    // Don't fail the request over an email delivery problem — the portal user is already created.
+    try {
+      await sendPortalInviteEmail(normalizedEmail, data.name, inviteToken);
+    } catch (emailErr) {
+      console.error(`[portal-invite] failed to email ${normalizedEmail}:`, emailErr.message);
+    }
 
     const response = { ...data };
     if (process.env.NODE_ENV !== "production") {

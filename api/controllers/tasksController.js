@@ -2,13 +2,18 @@ import { supabaseAdmin } from "../../db_connection.js";
 import {
   taskStatuses,
   taskPriorities,
+  taskAssigneeTypes,
   getProjectForCompany,
   getTaskForCompany,
   validatePhaseBelongsToProject,
   validateUserInCompany,
+  validateClientAssigneeForProject,
+  createTaskForProject,
   computeCompletedAt,
   enrichTasks,
 } from "../lib/tasks.js";
+import { createNotification } from "../lib/notifications.js";
+import { getPortalProject } from "../lib/portal.js";
 
 const table = "tasks";
 
@@ -89,87 +94,26 @@ export async function createByProject(req, res) {
     const projectId = req.params.id;
     if (!companyId || !userId) return res.status(401).json({ error: "Not authenticated" });
 
-    const project = await getProjectForCompany(companyId, projectId, "id");
+    const project = await getProjectForCompany(companyId, projectId);
     if (!project) return res.status(404).json({ error: "Project not found" });
 
-    const {
-      title,
-      description,
-      phase_id,
-      parent_task_id,
-      status,
-      priority,
-      assignee_id,
-      start_date,
-      due_date,
-    } = req.body;
+    const result = await createTaskForProject(companyId, userId, project, req.body);
+    if (result.error) return res.status(result.status).json({ error: result.error });
 
-    if (!title || !String(title).trim()) {
-      return res.status(400).json({ error: "title is required" });
+    if (result.notifyClientAssigneeId) {
+      await createNotification({
+        company_id: companyId,
+        recipient_type: "client_portal_user",
+        recipient_id: result.notifyClientAssigneeId,
+        type: "task_assigned_to_client",
+        title: `New task assigned: ${result.task.title}`,
+        body: result.task.description ?? null,
+        related_type: "task",
+        related_id: result.task.id,
+      });
     }
 
-    if (status != null && !taskStatuses.includes(status)) {
-      return res.status(400).json({ error: "Invalid status" });
-    }
-    if (priority != null && !taskPriorities.includes(priority)) {
-      return res.status(400).json({ error: "Invalid priority" });
-    }
-
-    if (start_date && due_date && new Date(due_date) < new Date(start_date)) {
-      return res.status(400).json({ error: "due_date must be on or after start_date" });
-    }
-
-    const phaseCheck = await validatePhaseBelongsToProject(companyId, projectId, phase_id);
-    if (!phaseCheck.valid) return res.status(400).json({ error: phaseCheck.error });
-
-    if (assignee_id) {
-      const belongs = await validateUserInCompany(companyId, assignee_id);
-      if (!belongs) return res.status(400).json({ error: "Invalid assignee_id for this company" });
-    }
-
-    let finalParentTaskId = null;
-    if (parent_task_id) {
-      const parent = await getTaskForCompany(companyId, parent_task_id, "id, project_id");
-      if (!parent || String(parent.project_id) !== String(projectId)) {
-        return res
-          .status(400)
-          .json({ error: "Subtask must belong to the same project as its parent task" });
-      }
-      finalParentTaskId = parent_task_id;
-    }
-
-    const finalStatus = status ?? "todo";
-
-    // append to the end of this status column
-    const { count, error: countErr } = await supabaseAdmin
-      .from(table)
-      .select("id", { count: "exact", head: true })
-      .eq("company_id", companyId)
-      .eq("project_id", projectId)
-      .eq("status", finalStatus);
-    if (countErr) throw countErr;
-
-    const payload = {
-      company_id: companyId,
-      project_id: projectId,
-      phase_id: phase_id ?? null,
-      parent_task_id: finalParentTaskId,
-      title: String(title).trim(),
-      description: description ? String(description).trim() : null,
-      status: finalStatus,
-      priority: priority ?? "medium",
-      assignee_id: assignee_id ?? null,
-      start_date: start_date ?? null,
-      due_date: due_date ?? null,
-      completed_at: finalStatus === "done" ? new Date().toISOString() : null,
-      position: count ?? 0,
-      created_by: userId,
-    };
-
-    const { data, error } = await supabaseAdmin.from(table).insert(payload).select("*").single();
-    if (error) throw error;
-
-    const [enriched] = await enrichTasks(companyId, [data]);
+    const [enriched] = await enrichTasks(companyId, [result.task]);
     return res.status(201).json(enriched);
   } catch (err) {
     return res.status(500).json({ error: err.message });
@@ -193,6 +137,8 @@ export async function update(req, res) {
       status,
       priority,
       assignee_id,
+      assignee_type,
+      client_assignee_id,
       start_date,
       due_date,
       position,
@@ -216,9 +162,34 @@ export async function update(req, res) {
       if (!phaseCheck.valid) return res.status(400).json({ error: phaseCheck.error });
     }
 
-    if (assignee_id !== undefined && assignee_id !== null) {
-      const belongs = await validateUserInCompany(companyId, assignee_id);
-      if (!belongs) return res.status(400).json({ error: "Invalid assignee_id for this company" });
+    const finalAssigneeType = assignee_type !== undefined ? assignee_type : existing.assignee_type;
+    if (assignee_type !== undefined && !taskAssigneeTypes.includes(assignee_type)) {
+      return res.status(400).json({ error: "Invalid assignee_type" });
+    }
+
+    let notifyClientAssigneeId = null;
+    if (finalAssigneeType === "client") {
+      const finalClientAssigneeId = client_assignee_id !== undefined ? client_assignee_id : existing.client_assignee_id;
+      if (!finalClientAssigneeId) {
+        return res.status(400).json({ error: "client_assignee_id is required when assignee_type is 'client'" });
+      }
+      if (assignee_id) {
+        return res.status(400).json({ error: "assignee_id must not be set when assignee_type is 'client'" });
+      }
+      if (client_assignee_id !== undefined && String(client_assignee_id) !== String(existing.client_assignee_id)) {
+        const project = await getProjectForCompany(companyId, existing.project_id);
+        const belongs = project && (await validateClientAssigneeForProject(companyId, project.client_id, finalClientAssigneeId));
+        if (!belongs) return res.status(400).json({ error: "Invalid client_assignee_id for this project's client" });
+        notifyClientAssigneeId = finalClientAssigneeId;
+      }
+    } else {
+      if (client_assignee_id) {
+        return res.status(400).json({ error: "client_assignee_id must not be set when assignee_type is 'team_member'" });
+      }
+      if (assignee_id !== undefined && assignee_id !== null) {
+        const belongs = await validateUserInCompany(companyId, assignee_id);
+        if (!belongs) return res.status(400).json({ error: "Invalid assignee_id for this company" });
+      }
     }
 
     if (parent_task_id !== undefined && parent_task_id !== null) {
@@ -240,7 +211,13 @@ export async function update(req, res) {
       ...(parent_task_id !== undefined ? { parent_task_id } : {}),
       ...(status !== undefined ? { status } : {}),
       ...(priority !== undefined ? { priority } : {}),
-      ...(assignee_id !== undefined ? { assignee_id } : {}),
+      ...(assignee_type !== undefined ? { assignee_type } : {}),
+      ...(assignee_id !== undefined || assignee_type !== undefined
+        ? { assignee_id: finalAssigneeType === "team_member" ? (assignee_id !== undefined ? assignee_id : existing.assignee_id) : null }
+        : {}),
+      ...(client_assignee_id !== undefined || assignee_type !== undefined
+        ? { client_assignee_id: finalAssigneeType === "client" ? (client_assignee_id !== undefined ? client_assignee_id : existing.client_assignee_id) : null }
+        : {}),
       ...(start_date !== undefined ? { start_date } : {}),
       ...(due_date !== undefined ? { due_date } : {}),
       ...(position !== undefined ? { position } : {}),
@@ -261,6 +238,19 @@ export async function update(req, res) {
       .maybeSingle();
     if (error) throw error;
     if (!data) return res.status(404).json({ error: "Not found" });
+
+    if (notifyClientAssigneeId) {
+      await createNotification({
+        company_id: companyId,
+        recipient_type: "client_portal_user",
+        recipient_id: notifyClientAssigneeId,
+        type: "task_assigned_to_client",
+        title: `New task assigned: ${data.title}`,
+        body: data.description ?? null,
+        related_type: "task",
+        related_id: data.id,
+      });
+    }
 
     const [enriched] = await enrichTasks(companyId, [data]);
     return res.json(enriched);
@@ -375,6 +365,35 @@ export async function reorder(req, res) {
     const tasks = await enrichTasks(companyId, ordered);
 
     return res.json({ tasks });
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
+  }
+}
+
+/**
+ * GET /api/portal/projects/:id/tasks — "Pending on Client": read-only list of open tasks
+ * assigned to the current client on this project (assignee_type=client, status != done).
+ */
+export async function portalListPendingByProject(req, res) {
+  try {
+    const { company_id: companyId, client_id: clientId } = req.portalUser;
+    const projectId = req.params.id;
+
+    const project = await getPortalProject(companyId, clientId, projectId);
+    if (!project) return res.status(404).json({ error: "Not found" });
+
+    const { data, error } = await supabaseAdmin
+      .from(table)
+      .select("*")
+      .eq("company_id", companyId)
+      .eq("project_id", projectId)
+      .eq("assignee_type", "client")
+      .neq("status", "done")
+      .order("due_date", { ascending: true, nullsFirst: false })
+      .order("created_at", { ascending: true });
+    if (error) throw error;
+
+    return res.json({ tasks: data || [] });
   } catch (err) {
     return res.status(500).json({ error: err.message });
   }

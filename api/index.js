@@ -29,6 +29,11 @@ import tasksRouter from "./routes/tasks.js";
 import checklistItemsRouter from "./routes/checklist-items.js";
 import portalAuthRouter from "./routes/portalAuth.js";
 import portalRouter from "./routes/portal.js";
+import notificationsRouter from "./routes/notifications.js";
+import meetingsRouter from "./routes/meetings.js";
+import projectLinksRouter from "./routes/project-links.js";
+import credentialsRouter from "./routes/credentials.js";
+import internalRouter from "./routes/internal.js";
 import { requireAuth } from "./middleware/auth.js";
 import { requirePortalAuth } from "./middleware/portalAuth.js";
 const app = express();
@@ -79,8 +84,13 @@ app.use("/api/vendor-bills", requireSupabase, requireAuth, vendorBillsRouter);
 app.use("/api/team", requireSupabase, requireAuth, teamRouter);
 app.use("/api/tasks", requireSupabase, requireAuth, tasksRouter);
 app.use("/api/checklist-items", requireSupabase, requireAuth, checklistItemsRouter);
+app.use("/api/notifications", requireSupabase, requireAuth, notificationsRouter);
+app.use("/api/meetings", requireSupabase, requireAuth, meetingsRouter);
+app.use("/api/project-links", requireSupabase, requireAuth, projectLinksRouter);
+app.use("/api/credentials", requireSupabase, requireAuth, credentialsRouter);
 app.use("/api/portal/auth", requireSupabase, portalAuthRouter);
 app.use("/api/portal", requireSupabase, requirePortalAuth, portalRouter);
+app.use("/api/internal", requireSupabase, internalRouter);
 
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
