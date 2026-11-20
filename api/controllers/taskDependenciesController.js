@@ -1,5 +1,5 @@
 import { supabaseAdmin } from "../../db_connection.js";
-import { getTaskForCompany, enrichTasks, wouldCreateCircularDependency } from "../lib/tasks.js";
+import { getTaskForCompany, enrichTasks, wouldCreateCircularDependency, canTouchTask } from "../lib/tasks.js";
 
 const table = "task_dependencies";
 const dependencyTypes = ["finish_to_start", "start_to_start"];
@@ -10,8 +10,8 @@ export async function list(req, res) {
     const taskId = req.params.taskId;
     if (!companyId) return res.status(401).json({ error: "Not authenticated" });
 
-    const task = await getTaskForCompany(companyId, taskId, "id");
-    if (!task) return res.status(404).json({ error: "Task not found" });
+    const task = await getTaskForCompany(companyId, taskId, "id, assignee_id, created_by");
+    if (!task || !canTouchTask(req.user, task)) return res.status(404).json({ error: "Task not found" });
 
     const { data: deps, error: depsErr } = await supabaseAdmin
       .from(table)
@@ -42,8 +42,8 @@ export async function create(req, res) {
     const taskId = req.params.taskId;
     if (!companyId) return res.status(401).json({ error: "Not authenticated" });
 
-    const task = await getTaskForCompany(companyId, taskId, "id, project_id");
-    if (!task) return res.status(404).json({ error: "Task not found" });
+    const task = await getTaskForCompany(companyId, taskId, "id, project_id, assignee_id, created_by");
+    if (!task || !canTouchTask(req.user, task)) return res.status(404).json({ error: "Task not found" });
 
     const { depends_on_task_id, dependency_type } = req.body;
     if (!depends_on_task_id) {
@@ -56,8 +56,12 @@ export async function create(req, res) {
       return res.status(400).json({ error: "Invalid dependency_type" });
     }
 
-    const dependsOnTask = await getTaskForCompany(companyId, depends_on_task_id, "id, project_id");
-    if (!dependsOnTask || String(dependsOnTask.project_id) !== String(task.project_id)) {
+    const dependsOnTask = await getTaskForCompany(companyId, depends_on_task_id, "id, project_id, assignee_id, created_by");
+    if (
+      !dependsOnTask ||
+      !canTouchTask(req.user, dependsOnTask) ||
+      String(dependsOnTask.project_id ?? "") !== String(task.project_id ?? "")
+    ) {
       return res.status(400).json({ error: "depends_on_task_id must belong to the same project" });
     }
 
@@ -93,8 +97,8 @@ export async function remove(req, res) {
     const dependsOnId = req.params.dependsOnId;
     if (!companyId) return res.status(401).json({ error: "Not authenticated" });
 
-    const task = await getTaskForCompany(companyId, taskId, "id");
-    if (!task) return res.status(404).json({ error: "Task not found" });
+    const task = await getTaskForCompany(companyId, taskId, "id, assignee_id, created_by");
+    if (!task || !canTouchTask(req.user, task)) return res.status(404).json({ error: "Task not found" });
 
     const { data, error } = await supabaseAdmin
       .from(table)

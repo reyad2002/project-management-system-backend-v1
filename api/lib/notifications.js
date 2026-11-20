@@ -10,6 +10,12 @@ export const notificationTypes = [
   "task_assigned_to_client",
   "feedback_requested",
   "meeting_cancelled",
+  "task_assigned",
+  "task_overdue",
+  "task_due_soon",
+  "task_escalated",
+  "task_comment",
+  "task_mention",
 ];
 
 /**

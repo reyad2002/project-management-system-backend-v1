@@ -1,14 +1,14 @@
 import { supabaseAdmin } from "../../db_connection.js";
-import { getTaskForCompany } from "../lib/tasks.js";
+import { getTaskForCompany, canTouchTask } from "../lib/tasks.js";
 
 const table = "task_checklist_items";
 
-async function getItemWithTaskCheck(companyId, itemId) {
+async function getItemWithTaskCheck(companyId, itemId, user) {
   const { data: item, error } = await supabaseAdmin.from(table).select("*").eq("id", itemId).maybeSingle();
   if (error) throw error;
   if (!item) return null;
-  const task = await getTaskForCompany(companyId, item.task_id, "id");
-  if (!task) return null;
+  const task = await getTaskForCompany(companyId, item.task_id, "id, assignee_id, created_by");
+  if (!task || !canTouchTask(user, task)) return null;
   return item;
 }
 
@@ -18,8 +18,8 @@ export async function listByTask(req, res) {
     const taskId = req.params.taskId;
     if (!companyId) return res.status(401).json({ error: "Not authenticated" });
 
-    const task = await getTaskForCompany(companyId, taskId, "id");
-    if (!task) return res.status(404).json({ error: "Task not found" });
+    const task = await getTaskForCompany(companyId, taskId, "id, assignee_id, created_by");
+    if (!task || !canTouchTask(req.user, task)) return res.status(404).json({ error: "Task not found" });
 
     const { data, error } = await supabaseAdmin
       .from(table)
@@ -41,8 +41,8 @@ export async function create(req, res) {
     const taskId = req.params.taskId;
     if (!companyId) return res.status(401).json({ error: "Not authenticated" });
 
-    const task = await getTaskForCompany(companyId, taskId, "id");
-    if (!task) return res.status(404).json({ error: "Task not found" });
+    const task = await getTaskForCompany(companyId, taskId, "id, assignee_id, created_by");
+    if (!task || !canTouchTask(req.user, task)) return res.status(404).json({ error: "Task not found" });
 
     const { title } = req.body;
     if (!title || !String(title).trim()) {
@@ -77,7 +77,7 @@ export async function update(req, res) {
     const itemId = req.params.id;
     if (!companyId) return res.status(401).json({ error: "Not authenticated" });
 
-    const existing = await getItemWithTaskCheck(companyId, itemId);
+    const existing = await getItemWithTaskCheck(companyId, itemId, req.user);
     if (!existing) return res.status(404).json({ error: "Not found" });
 
     const { title, is_done, position } = req.body;
@@ -113,7 +113,7 @@ export async function remove(req, res) {
     const itemId = req.params.id;
     if (!companyId) return res.status(401).json({ error: "Not authenticated" });
 
-    const existing = await getItemWithTaskCheck(companyId, itemId);
+    const existing = await getItemWithTaskCheck(companyId, itemId, req.user);
     if (!existing) return res.status(404).json({ error: "Not found" });
 
     const { error } = await supabaseAdmin.from(table).delete().eq("id", itemId);

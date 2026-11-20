@@ -1,6 +1,8 @@
 import { Router } from "express";
 import { runMeetingReminderJob } from "../lib/meetingReminders.js";
 import { runRecurringBillingJob } from "../lib/recurringReminders.js";
+import { runTaskReminderJob } from "../lib/taskReminders.js";
+import { runBudgetAlertJob } from "../lib/budgets.js";
 
 const router = Router();
 
@@ -24,7 +26,20 @@ function requireCronSecret(req, res, next) {
 async function handleMeetingReminders(req, res) {
   try {
     const result = await runMeetingReminderJob();
-    return res.json(result);
+    // Same daily trigger (the plan has a fixed number of cron slots): also flag overdue tasks.
+    let tasks = null;
+    try {
+      tasks = await runTaskReminderJob();
+    } catch (taskErr) {
+      console.error("[task-reminders] failed:", taskErr.message);
+    }
+    let budgets = null;
+    try {
+      budgets = await runBudgetAlertJob();
+    } catch (budgetErr) {
+      console.error("[budget-alerts] failed:", budgetErr.message);
+    }
+    return res.json({ ...result, tasks, budgets });
   } catch (err) {
     return res.status(500).json({ error: err.message });
   }

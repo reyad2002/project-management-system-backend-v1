@@ -1,6 +1,7 @@
 import { Router } from "express";
 import * as statisticsController from "../controllers/statisticsController.js";
 import * as monthlyReportController from "../controllers/monthlyReportController.js";
+import * as insights from "../controllers/financeInsightsController.js";
 
 const router = Router();
 
@@ -15,5 +16,7 @@ router.get("/expenses", statisticsController.getExpensesStats);
 router.get("/ar-aging", statisticsController.getArAging);
 router.get("/ap-aging", statisticsController.getApAging);
 router.get("/project-profitability", statisticsController.getProjectProfitability);
+router.get("/project-budgets", insights.projectBudgets);
+router.get("/client-profitability", insights.clientProfitability);
 
 export default router;

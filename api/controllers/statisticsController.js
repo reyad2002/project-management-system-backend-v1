@@ -1,6 +1,7 @@
 import { supabaseAdmin } from "../../db_connection.js";
 
 import { chargeDueRecurringExpenses } from "../lib/recurringCharges.js";
+import { budgetStatus } from "../lib/budgets.js";
 
 const projectsTable = "projects";
 const clientsTable = "clients";
@@ -41,7 +42,7 @@ export async function getDashboard(req, res) {
 
     // Record subscriptions that fell due so the expense totals below are current.
     try {
-      await chargeDueRecurringExpenses({ companyId });
+      await chargeDueRecurringExpenses({ companyId, throttleMs: 60_000 });
     } catch (chargeErr) {
       console.error("[dashboard] auto-charge failed:", chargeErr.message);
     }
@@ -687,7 +688,7 @@ function buildAgingBuckets(rows) {
 async function computeProjectProfitability(companyId, projectId, titleHint) {
   const { data: project, error: projectErr } = await supabaseAdmin
     .from(projectsTable)
-    .select("id, title, ad_budget")
+    .select("id, title, ad_budget, budget_cost")
     .eq("id", projectId)
     .eq("company_id", companyId)
     .maybeSingle();
@@ -770,8 +771,11 @@ async function computeProjectProfitability(companyId, projectId, titleHint) {
     adSpend,
     // Negative = more was spent on ads than the client's budget; positive = client money not yet spent.
     adBudgetRemaining: adBudget > 0 ? round2(adBudget - adSpend) : null,
-    budgetedCost: null,
-    budgetVariance: null,
+    // The expected cost set on the project, and how much of it is used (positive variance = under budget).
+    budgetedCost: project.budget_cost != null ? round2(Number(project.budget_cost)) : null,
+    budgetVariance: project.budget_cost != null ? round2(Number(project.budget_cost) - totalCost) : null,
+    budgetPercent: project.budget_cost != null ? budgetStatus(project.budget_cost, totalCost).percent : null,
+    budgetLevel: project.budget_cost != null ? budgetStatus(project.budget_cost, totalCost).level : null,
   };
 }
 

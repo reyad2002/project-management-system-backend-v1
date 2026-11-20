@@ -5,6 +5,19 @@ export const taskPriorities = ["low", "medium", "high", "urgent"];
 export const projectMemberRoles = ["owner", "manager", "contributor", "viewer"];
 export const taskAssigneeTypes = ["team_member", "client"];
 
+/** A task that belongs to the company itself rather than to a client project. */
+export const INTERNAL_PROJECT = Object.freeze({ id: null, client_id: null });
+
+/** Roles that see and manage every task. Everyone else only sees tasks assigned to or created by them. */
+export const TASK_VIEW_ALL_ROLES = ["owner", "admin", "manager"];
+export const canSeeAllTasks = (user) => TASK_VIEW_ALL_ROLES.includes(user?.role);
+export function canTouchTask(user, task) {
+  if (!task) return false;
+  if (canSeeAllTasks(user)) return true;
+  const me = String(user?.id);
+  return String(task.assignee_id) === me || String(task.created_by) === me;
+}
+
 /**
  * Ensure a project exists and belongs to the given company. Returns the project row or null.
  */
@@ -108,6 +121,10 @@ export async function validateTaskInput(companyId, project, input) {
     return { valid: false, error: "due_date must be on or after start_date", status: 400 };
   }
 
+  const isInternal = project.id == null;
+  if (isInternal && phase_id) {
+    return { valid: false, error: "An internal task can't belong to a phase", status: 400 };
+  }
   const phaseCheck = await validatePhaseBelongsToProject(companyId, project.id, phase_id);
   if (!phaseCheck.valid) return { valid: false, error: phaseCheck.error, status: 400 };
 
@@ -117,6 +134,9 @@ export async function validateTaskInput(companyId, project, input) {
   }
 
   if (finalAssigneeType === "client") {
+    if (isInternal) {
+      return { valid: false, error: "An internal task can only be assigned to a team member", status: 400 };
+    }
     if (assignee_id) {
       return { valid: false, error: "assignee_id must not be set when assignee_type is 'client'", status: 400 };
     }
@@ -138,7 +158,7 @@ export async function validateTaskInput(companyId, project, input) {
   let finalParentTaskId = null;
   if (parent_task_id) {
     const parent = await getTaskForCompany(companyId, parent_task_id, "id, project_id");
-    if (!parent || String(parent.project_id) !== String(project.id)) {
+    if (!parent || String(parent.project_id ?? "") !== String(project.id ?? "")) {
       return { valid: false, error: "Subtask must belong to the same project as its parent task", status: 400 };
     }
     finalParentTaskId = parent_task_id;
@@ -162,12 +182,13 @@ export async function createTaskForProject(companyId, userId, project, input) {
   const finalStatus = status ?? "todo";
 
   // append to the end of this status column
-  const { count, error: countErr } = await supabaseAdmin
+  let countQuery = supabaseAdmin
     .from("tasks")
     .select("id", { count: "exact", head: true })
     .eq("company_id", companyId)
-    .eq("project_id", project.id)
     .eq("status", finalStatus);
+  countQuery = project.id == null ? countQuery.is("project_id", null) : countQuery.eq("project_id", project.id);
+  const { count, error: countErr } = await countQuery;
   if (countErr) throw countErr;
 
   const payload = {
@@ -220,7 +241,9 @@ export async function enrichTasks(companyId, tasks) {
   const assigneeIds = [...new Set(tasks.map((t) => t.assignee_id).filter(Boolean))];
   const clientAssigneeIds = [...new Set(tasks.map((t) => t.client_assignee_id).filter(Boolean))];
 
-  const [usersRes, clientUsersRes, subtasksRes, checklistRes] = await Promise.all([
+  const projectIds = [...new Set(tasks.map((t) => t.project_id).filter(Boolean))];
+
+  const [usersRes, clientUsersRes, subtasksRes, checklistRes, projectsRes] = await Promise.all([
     assigneeIds.length
       ? supabaseAdmin.from("users").select("id, name").in("id", assigneeIds)
       : Promise.resolve({ data: [] }),
@@ -229,7 +252,12 @@ export async function enrichTasks(companyId, tasks) {
       : Promise.resolve({ data: [] }),
     supabaseAdmin.from("tasks").select("parent_task_id").eq("company_id", companyId).in("parent_task_id", taskIds),
     supabaseAdmin.from("task_checklist_items").select("task_id, is_done").in("task_id", taskIds),
+    projectIds.length
+      ? supabaseAdmin.from("projects").select("id, title").in("id", projectIds)
+      : Promise.resolve({ data: [] }),
   ]);
+  if (projectsRes.error) throw projectsRes.error;
+  const projectTitleById = Object.fromEntries((projectsRes.data || []).map((p) => [String(p.id), p.title]));
   if (usersRes.error) throw usersRes.error;
   if (clientUsersRes.error) throw clientUsersRes.error;
   if (subtasksRes.error) throw subtasksRes.error;
@@ -256,6 +284,7 @@ export async function enrichTasks(companyId, tasks) {
     ...t,
     assignee_name: t.assignee_id ? nameById[String(t.assignee_id)] ?? null : null,
     client_assignee_name: t.client_assignee_id ? clientNameById[String(t.client_assignee_id)] ?? null : null,
+    project_title: t.project_id ? projectTitleById[String(t.project_id)] ?? null : null,
     subtasks_count: subtaskCounts[String(t.id)] || 0,
     checklist_progress: checklistProgress[String(t.id)] || { done: 0, total: 0 },
   }));

@@ -1,11 +1,15 @@
 import { Router } from "express";
 import * as clientsController from "../controllers/clientsController.js";
 import * as clientPortalUsersController from "../controllers/clientPortalUsersController.js";
+import * as clientHealthController from "../controllers/clientHealthController.js";
+import { requireRole, ACCESS } from "../middleware/auth.js";
 
 const router = Router();
 
 router.get("/", clientsController.list);
 router.get("/shortList", clientsController.shortList);
+// Health mixes in invoices and payments, so it is for the finance roles.
+router.get("/health", requireRole(...ACCESS.finance), clientHealthController.health);
 router.get("/:id/payment-summary", clientsController.getPaymentSummary);
 router.get("/:clientId/portal-users", clientPortalUsersController.list);
 router.post("/:clientId/portal-users", clientPortalUsersController.create);

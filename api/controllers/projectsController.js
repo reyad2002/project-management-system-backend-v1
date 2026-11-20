@@ -3,6 +3,14 @@ import { supabaseAdmin } from "../../db_connection.js";
 const table = "projects";
 
 const statuses = ["draft", "active", "on_hold", "cancelled", "completed"];
+/** Expected cost: a number >= 0, or empty / null for "no budget". */
+function parseBudget(raw) {
+  if (raw === undefined || raw === null || raw === "") return { value: null };
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n < 0) return { error: "budget_cost must be a number >= 0" };
+  return { value: n };
+}
+
 const projectTypes = ["software", "marketing", "branding", "social_media", "other"];
 const billingModels = ["fixed", "retainer", "hybrid"];
 export async function list(req, res) {
@@ -139,7 +147,7 @@ export async function create(req, res) {
       return res.status(401).json({ error: "Not authenticated" });
     }
 
-    const { client_id, title, details, start_date, due_date, price, status, type, billing_model, is_test, ad_budget } =
+    const { client_id, title, details, start_date, due_date, price, status, type, billing_model, is_test, ad_budget, budget_cost } =
       req.body;
 
     if (!client_id || !title || !String(title).trim()) {
@@ -167,6 +175,8 @@ export async function create(req, res) {
         return res.status(400).json({ error: "ad_budget cannot be more than the project price" });
       }
     }
+    const budgetCheck = parseBudget(budget_cost);
+    if (budgetCheck.error) return res.status(400).json({ error: budgetCheck.error });
 
     const { data: client, error: clientErr } = await supabaseAdmin
       .from("clients")
@@ -200,6 +210,7 @@ export async function create(req, res) {
       billing_model: billing_model ?? "fixed",
       is_test: is_test ?? false,
       ad_budget: ad_budget != null ? Number(ad_budget) : 0,
+      budget_cost: budgetCheck.value ?? null,
       created_by: userId,
     };
 
@@ -207,7 +218,7 @@ export async function create(req, res) {
       .from(table)
       .insert(payload)
       .select(
-        "id, created_at, company_id, client_id, title, details, start_date, due_date, price, status, type, billing_model, is_test, ad_budget, created_by",
+        "id, created_at, company_id, client_id, title, details, start_date, due_date, price, status, type, billing_model, is_test, ad_budget, budget_cost, created_by",
       )
       .single();
 
@@ -232,7 +243,7 @@ export async function update(req, res) {
       return res.status(400).json({ error: "Missing id" });
     }
 
-    const { client_id, title, details, start_date, due_date, price, status, type, billing_model, is_test, ad_budget } =
+    const { client_id, title, details, start_date, due_date, price, status, type, billing_model, is_test, ad_budget, budget_cost } =
       req.body;
 
     // at least one field
@@ -247,7 +258,8 @@ export async function update(req, res) {
       type == null &&
       billing_model == null &&
       is_test == null &&
-      ad_budget == null
+      ad_budget == null &&
+      budget_cost === undefined
     ) {
       return res.status(400).json({ error: "No fields to update" });
     }
@@ -265,6 +277,9 @@ export async function update(req, res) {
     if (is_test != null && typeof is_test !== "boolean") {
       return res.status(400).json({ error: "is_test must be true or false" });
     }
+
+    const budgetCheck = parseBudget(budget_cost);
+    if (budgetCheck.error) return res.status(400).json({ error: budgetCheck.error });
 
     // Money guards: never let the price drop below what the client already paid (that is how
     // "overpaid" projects appear), and keep the ad budget inside the package price.
@@ -348,6 +363,8 @@ export async function update(req, res) {
       billing_model,
       is_test,
       ad_budget: ad_budget != null ? Number(ad_budget) : undefined,
+      // undefined = leave as is; null / "" = clear the budget
+      budget_cost: budget_cost === undefined ? undefined : (budgetCheck.value ?? null),
     };
 
     const clean = Object.fromEntries(

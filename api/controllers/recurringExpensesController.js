@@ -25,7 +25,7 @@ export async function list(req, res) {
 
     // Catch up on anything that fell due (idempotent) so the list is always current, cron or not.
     try {
-      await chargeDueRecurringExpenses({ companyId });
+      await chargeDueRecurringExpenses({ companyId, throttleMs: 60_000 });
     } catch (chargeErr) {
       console.error("[recurring-expenses] auto-charge failed:", chargeErr.message);
     }

@@ -43,11 +43,26 @@ export function expenseForCycle(subscription, dueDate) {
 }
 
 /**
- * @param {{ companyId?: string|number }} [options] limit to one company (omit for every company)
+ * @param {{ companyId?: string|number, throttleMs?: number }} [options] limit to one company (omit for every company);
+ *   throttleMs skips the check if this instance already ran it that recently
  * @returns the expenses that were created, one entry per charged cycle
  */
-export async function chargeDueRecurringExpenses({ companyId } = {}) {
+const lastChecked = new Map();
+export function clearChargeThrottle() {
+  lastChecked.clear();
+}
+
+export async function chargeDueRecurringExpenses({ companyId, throttleMs = 0 } = {}) {
   const today = todayStr();
+
+  // Page-open callers pass throttleMs: nothing new falls due within a minute, so skip the round trips.
+  if (throttleMs > 0) {
+    const key = `${companyId ?? "all"}:${today}`;
+    const at = lastChecked.get(key);
+    if (at && Date.now() - at < throttleMs) return [];
+    if (lastChecked.size > 200) lastChecked.clear();
+    lastChecked.set(key, Date.now());
+  }
 
   let query = supabaseAdmin
     .from("recurring_expenses")

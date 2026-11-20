@@ -13,7 +13,29 @@ export const ACCESS = {
   accounts: ["owner", "admin"], // create/disable accounts, audit log
   finance: ["owner", "admin", "manager", "accountant"], // invoices, payments, expenses, reports...
   credentials: ["owner", "admin", "manager", "member"], // project credentials (not for accountants)
+  taskAdmin: ["owner", "admin", "manager"], // task templates and recurring tasks
 };
+
+// A user lookup on every request is a database round trip. Cache it for a few seconds per server
+// instance; any account/password write clears it (see clearUserCache in index.js), so a blocked
+// account still loses access right away on the instance that handled the change and within
+// USER_CACHE_MS everywhere else.
+const USER_CACHE_MS = 10_000;
+const userCache = new Map();
+export function clearUserCache() {
+  userCache.clear();
+}
+
+async function loadUser(userId) {
+  const hit = userCache.get(userId);
+  if (hit && hit.expires > Date.now()) return { data: hit.user, error: null };
+  const { data, error } = await supabaseAdmin.from(usersTable).select(userSelectFields).eq("id", userId).single();
+  if (!error && data) {
+    if (userCache.size > 500) userCache.clear();
+    userCache.set(userId, { user: data, expires: Date.now() + USER_CACHE_MS });
+  }
+  return { data, error };
+}
 
 export async function requireAuth(req, res, next) {
   try {
@@ -44,11 +66,7 @@ export async function requireAuth(req, res, next) {
       return res.status(503).json({ error: "Database not configured" });
     }
 
-    const { data: user, error } = await supabaseAdmin
-      .from(usersTable)
-      .select(userSelectFields)
-      .eq("id", userId)
-      .single();
+    const { data: user, error } = await loadUser(userId);
 
     if (error || !user) {
       return res.status(401).json({ error: "User not found" });

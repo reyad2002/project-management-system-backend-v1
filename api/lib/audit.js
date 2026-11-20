@@ -103,6 +103,11 @@ const RESOURCES = {
   "vendor-bills": { entity: "vendor_bill", table: "vendor_bills" },
   tasks: { entity: "task", table: "tasks" },
   "checklist-items": { entity: "task_checklist_item", table: "task_checklist_items" },
+  "task-templates": { entity: "task_template", table: "task_templates" },
+  "task-comments": { entity: "task_comment", table: "task_comments" },
+  "client-contacts": { entity: "client_contact", table: "client_contacts" },
+  "task-attachments": { entity: "task_attachment", table: "task_attachments" },
+  "recurring-tasks": { entity: "recurring_task", table: "recurring_tasks" },
   meetings: { entity: "meeting", table: "meetings" },
   "project-links": { entity: "project_link", table: "project_links" },
   credentials: { entity: "credential", table: "credentials" },
@@ -133,7 +138,7 @@ const SUB_RESOURCES = {
 };
 
 // Mutations that are pure noise (read receipts etc.)
-const SKIP = [/^\/api\/notifications(\/|$)/, /^\/api\/portal\/notifications(\/|$)/, /\/mark-read$/];
+const SKIP = [/^\/api\/saved-filters(\/|$)/, /^\/api\/notifications(\/|$)/, /^\/api\/portal\/notifications(\/|$)/, /\/mark-read$/];
 
 const ACTION_WORDS = {
   send: "send",
@@ -172,6 +177,9 @@ export function describeRequest(req) {
     word = ACTION_WORDS[sub];
   } else if (sub) {
     word = sub.replace(/-/g, "_");
+  } else if (id && !isId(id)) {
+    // /api/tasks/bulk-update -> "bulk_update", /api/task-templates/defaults -> "defaults"
+    word = id.replace(/-/g, "_");
   }
   if (!entry && resource === "phases") entry = SUB_RESOURCES.phases;
   if (resource === "meeting-notes") entry = { entity: "meeting_note", table: "meeting_notes" };

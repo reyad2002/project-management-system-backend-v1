@@ -28,6 +28,14 @@ import vendorsRouter from "./routes/vendors.js";
 import vendorBillsRouter from "./routes/vendor-bills.js";
 import teamRouter from "./routes/team.js";
 import tasksRouter from "./routes/tasks.js";
+import taskTemplatesRouter from "./routes/task-templates.js";
+import recurringTasksRouter from "./routes/recurring-tasks.js";
+import taskCommentsRouter from "./routes/task-comments.js";
+import searchRouter from "./routes/search.js";
+import todayRouter from "./routes/today.js";
+import savedFiltersRouter from "./routes/saved-filters.js";
+import clientContactsRouter from "./routes/client-contacts.js";
+import taskAttachmentsRouter from "./routes/task-attachments.js";
 import checklistItemsRouter from "./routes/checklist-items.js";
 import portalAuthRouter from "./routes/portalAuth.js";
 import portalRouter from "./routes/portal.js";
@@ -42,7 +50,10 @@ import projectReportsRouter from "./routes/project-reports.js";
 import investmentsRouter from "./routes/investments.js";
 import financeRouter from "./routes/finance.js";
 import internalRouter from "./routes/internal.js";
-import { requireAuth, requireRole, ACCESS } from "./middleware/auth.js";
+import { requireAuth, requireRole, clearUserCache, ACCESS } from "./middleware/auth.js";
+import { clearChargeThrottle } from "./lib/recurringCharges.js";
+import { clearRecurringTaskThrottle } from "./lib/taskRecurrence.js";
+import compression from "compression";
 import { auditMutations } from "./lib/audit.js";
 import { requirePortalAuth } from "./middleware/portalAuth.js";
 const app = express();
@@ -70,6 +81,7 @@ const corsOptions = {
   credentials: true,
 };
 
+app.use(compression());
 app.use(cors(corsOptions));
 app.use(express.json());
 app.use(
@@ -81,14 +93,28 @@ app.get("/health", async (_req, res) => {
   res.status(result.ok ? 200 : 503).json(result);
 });
 // Every protected router: database available -> authenticated -> (role) -> audited.
+// After any write, forget cached facts that the write may have changed (a new subscription that is
+// already due must be charged on the next page open; a blocked account must lose access at once).
+const clearCachesOnWrite = (req, res, next) => {
+  if (req.method !== "GET" && req.method !== "OPTIONS") {
+    res.on("finish", () => {
+      clearChargeThrottle();
+      clearRecurringTaskThrottle();
+      if (/^\/api\/(accounts|auth)(\/|$)/.test(req.originalUrl)) clearUserCache();
+    });
+  }
+  next();
+};
+
 const secured = (...roles) => [
+  clearCachesOnWrite,
   requireSupabase,
   requireAuth,
   ...(roles.length ? [requireRole(...roles)] : []),
   auditMutations,
 ];
 
-app.use("/api/auth", authRouter);
+app.use("/api/auth", clearCachesOnWrite, authRouter);
 
 // SECURITY: the former /api/companies router was mounted WITHOUT authentication (anyone could list
 // companies, create users and reset any user's password) and is intentionally no longer mounted.
@@ -102,6 +128,14 @@ app.use("/api/projects", ...secured(), projectsRouter);
 app.use("/api/attachments", ...secured(), attachmentsRouter);
 app.use("/api/team", ...secured(), teamRouter);
 app.use("/api/tasks", ...secured(), tasksRouter);
+app.use("/api/search", ...secured(), searchRouter);
+app.use("/api/client-contacts", ...secured(), clientContactsRouter);
+app.use("/api/today", ...secured(), todayRouter);
+app.use("/api/saved-filters", ...secured(), savedFiltersRouter);
+app.use("/api/task-comments", ...secured(), taskCommentsRouter);
+app.use("/api/task-attachments", ...secured(), taskAttachmentsRouter);
+app.use("/api/task-templates", ...secured(...ACCESS.taskAdmin), taskTemplatesRouter);
+app.use("/api/recurring-tasks", ...secured(...ACCESS.taskAdmin), recurringTasksRouter);
 app.use("/api/checklist-items", ...secured(), checklistItemsRouter);
 app.use("/api/notifications", ...secured(), notificationsRouter);
 app.use("/api/meetings", ...secured(), meetingsRouter);
