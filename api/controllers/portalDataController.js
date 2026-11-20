@@ -17,7 +17,7 @@ export async function listProjects(req, res) {
 
     const { data, error } = await supabaseAdmin
       .from(projectsTable)
-      .select("id, title, status, start_date, due_date")
+      .select("id, title, status, type, billing_model, start_date, due_date")
       .eq("company_id", companyId)
       .eq("client_id", clientId)
       .order("created_at", { ascending: false });

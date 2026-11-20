@@ -9,6 +9,7 @@ import {
 } from "../lib/meetings.js";
 import { createNotifications } from "../lib/notifications.js";
 import { sendMeetingNotesDocxResponse } from "../lib/docx.js";
+import { getDefaultClientPortalUserIds, sendMeetingScheduledEmail } from "../lib/meetingInvites.js";
 
 const table = "meetings";
 const attendeesTable = "meeting_attendees";
@@ -33,7 +34,13 @@ export async function createByProject(req, res) {
       return res.status(400).json({ error: "scheduled_at is required and must be a valid date" });
     }
 
-    const attendeeCheck = await validateAndBuildAttendeeRows(companyId, project.client_id, attendee_ids);
+    // No attendee picker any more: when the caller doesn't send attendee_ids, invite the client's
+    // portal users so portal notifications and reminders still reach them.
+    const attendeeInput =
+      attendee_ids === undefined || attendee_ids === null
+        ? { team_member_ids: [], client_portal_user_ids: await getDefaultClientPortalUserIds(companyId, project.client_id) }
+        : attendee_ids;
+    const attendeeCheck = await validateAndBuildAttendeeRows(companyId, project.client_id, attendeeInput);
     if (!attendeeCheck.valid) return res.status(400).json({ error: attendeeCheck.error });
 
     const { data: meeting, error } = await supabaseAdmin
@@ -60,6 +67,24 @@ export async function createByProject(req, res) {
     }
 
     const attendees = await resolveAttendeeNames(companyId, attendeeCheck.attendeeRows);
+
+    // Tell the client about the meeting (time + topic). Awaited so serverless doesn't drop it after
+    // the response is sent; the helper swallows its own errors, so this can't fail the request.
+    const { data: projectRow } = await supabaseAdmin
+      .from("projects")
+      .select("title")
+      .eq("id", projectId)
+      .eq("company_id", companyId)
+      .maybeSingle();
+    await sendMeetingScheduledEmail({
+      companyId,
+      meeting,
+      project: { client_id: project.client_id, title: projectRow?.title },
+      portalAttendeeIds: attendeeCheck.attendeeRows
+        .filter((a) => a.attendee_type === "client_portal_user")
+        .map((a) => a.attendee_id),
+    });
+
     return res.status(201).json({ ...meeting, attendees });
   } catch (err) {
     return res.status(500).json({ error: err.message });

@@ -14,6 +14,12 @@ const costCategories = [
   "rent",
   "utilities",
   "other",
+  "salary",
+  "ad_spend",
+  "equipment",
+  "legal",
+  "bank_fees",
+  "advance",
 ];
 
 /**
@@ -174,6 +180,14 @@ export async function create(req, res) {
         .json({ error: "Invalid type (direct | operational)" });
     }
 
+    // A direct cost is by definition a cost of delivering a specific project; without a project
+    // it can never reach project profitability. Company-wide costs are "operational".
+    if (type === "direct" && !project_id) {
+      return res.status(400).json({
+        error: "Direct expenses must be linked to a project. Use 'operational' for company-wide costs.",
+      });
+    }
+
     // validate title (recommended)
     if (!title || !String(title).trim()) {
       return res.status(400).json({ error: "title is required" });
@@ -251,7 +265,7 @@ export async function update(req, res) {
 
     const { data: existing, error: existingErr } = await supabaseAdmin
       .from(table)
-      .select("id, project_id, phase_id")
+      .select("id, project_id, phase_id, type")
       .eq("id", id)
       .eq("company_id", companyId)
       .maybeSingle();
@@ -298,6 +312,12 @@ export async function update(req, res) {
     // resolve final project/phase to validate phase-belongs-to-project relationship
     const finalProjectId = project_id !== undefined ? project_id : existing.project_id;
     const finalPhaseId = phase_id !== undefined ? phase_id : existing.phase_id;
+    const finalType = type !== undefined && type !== null ? String(type).trim() : existing.type;
+    if (finalType === "direct" && !finalProjectId) {
+      return res.status(400).json({
+        error: "Direct expenses must be linked to a project. Pick a project, or change the type to 'operational'.",
+      });
+    }
     if (finalPhaseId) {
       const phaseCheck = await validatePhaseBelongsToProject(companyId, finalProjectId, finalPhaseId);
       if (!phaseCheck.valid) {

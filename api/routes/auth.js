@@ -7,5 +7,6 @@ const router = Router();
 router.post("/login", authController.login);
 router.post("/login-as-owner", authController.loginAsOwner);
 router.get("/me", requireAuth, authController.getMe);
+router.post("/change-password", requireAuth, authController.changePassword);
 router.post("/logout", authController.logout);
 export default router;

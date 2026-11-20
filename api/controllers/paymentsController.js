@@ -168,6 +168,12 @@ export async function create(req, res) {
     if (!payment_method) {
       return res.status(400).json({ error: "payment_method is required" });
     }
+    // Cash leaves no bank trail: record who received it / the receipt number.
+    if (payment_method === "cash" && !(notes && String(notes).trim())) {
+      return res.status(400).json({
+        error: "Cash payments need a note (who received the cash / receipt number).",
+      });
+    }
     if (!paymentMethods.includes(payment_method)) {
       return res.status(400).json({ error: "Invalid payment_method" });
     }
@@ -218,6 +224,25 @@ export async function create(req, res) {
     if (projectPrice > 0 && alreadyPaid + amt > projectPrice) {
       return res.status(400).json({
         error: `Total payments would exceed project price. Remaining: ${projectPrice - alreadyPaid}`,
+      });
+    }
+
+    // Same project + date + amount + method + note is almost certainly a double entry.
+    const paymentDay = payment_date ?? new Date().toISOString().slice(0, 10);
+    const wantedNote = notes ? String(notes).trim() : "";
+    const { data: sameDay, error: sameDayErr } = await supabaseAdmin
+      .from(table)
+      .select("id, notes")
+      .eq("company_id", companyId)
+      .eq("project_id", project_id)
+      .eq("payment_date", paymentDay)
+      .eq("amount", amt)
+      .eq("payment_method", payment_method);
+    if (sameDayErr) throw sameDayErr;
+    const duplicate = (sameDay || []).find((r) => (r.notes ?? "").trim() === wantedNote);
+    if (duplicate) {
+      return res.status(409).json({
+        error: `This looks like a duplicate of payment #${duplicate.id} (same project, date, amount and method). If it is a genuine second payment, add a note that tells them apart.`,
       });
     }
 

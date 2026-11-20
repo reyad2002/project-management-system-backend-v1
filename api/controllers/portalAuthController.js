@@ -1,6 +1,7 @@
 import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
 import { supabaseAdmin } from "../../db_connection.js";
+import { writeAudit } from "../lib/audit.js";
 
 const table = "client_portal_users";
 
@@ -16,7 +17,7 @@ export async function acceptInvite(req, res) {
 
     const { data: portalUser, error } = await supabaseAdmin
       .from(table)
-      .select("id, invite_token, invite_expires_at, status")
+      .select("id, company_id, name, invite_token, invite_expires_at, status")
       .eq("invite_token", token)
       .maybeSingle();
     if (error) throw error;
@@ -40,6 +41,18 @@ export async function acceptInvite(req, res) {
       })
       .eq("id", portalUser.id);
     if (updateErr) throw updateErr;
+
+    await writeAudit(req, {
+      company_id: portalUser.company_id,
+      actor_type: "client_portal_user",
+      actor_id: portalUser.id,
+      actor_name: portalUser.name,
+      action: "accept_invite",
+      entity_type: "client_portal_user",
+      entity_id: portalUser.id,
+      status_code: 200,
+      summary: `${portalUser.name} accepted the portal invite`,
+    });
 
     return res.json({ message: "Account activated. You can now log in." });
   } catch (err) {
@@ -71,11 +84,33 @@ export async function login(req, res) {
 
     const portalUser = rows?.[0];
     if (!portalUser || portalUser.status !== "active" || !portalUser.password_hash) {
+      await writeAudit(req, {
+        company_id: portalUser?.company_id,
+        actor_type: "anonymous",
+        action: "portal_login_failed",
+        entity_type: "client_portal_user",
+        entity_id: portalUser?.id,
+        outcome: "failure",
+        status_code: 401,
+        summary: `Failed portal login for ${normalizedEmail}`,
+        metadata: { email: normalizedEmail },
+      });
       return res.status(401).json({ error: "Invalid email or password" });
     }
 
     const valid = await bcrypt.compare(password, portalUser.password_hash);
     if (!valid) {
+      await writeAudit(req, {
+        company_id: portalUser.company_id,
+        actor_type: "anonymous",
+        action: "portal_login_failed",
+        entity_type: "client_portal_user",
+        entity_id: portalUser.id,
+        outcome: "failure",
+        status_code: 401,
+        summary: `Failed portal login (wrong password) for ${portalUser.name}`,
+        metadata: { email: normalizedEmail },
+      });
       return res.status(401).json({ error: "Invalid email or password" });
     }
 
@@ -83,6 +118,18 @@ export async function login(req, res) {
       .from(table)
       .update({ last_login_at: new Date().toISOString() })
       .eq("id", portalUser.id);
+
+    await writeAudit(req, {
+      company_id: portalUser.company_id,
+      actor_type: "client_portal_user",
+      actor_id: portalUser.id,
+      actor_name: portalUser.name,
+      action: "portal_login",
+      entity_type: "client_portal_user",
+      entity_id: portalUser.id,
+      status_code: 200,
+      summary: `${portalUser.name} logged in to the client portal`,
+    });
 
     const token = jwt.sign(
       { sub: portalUser.id, client_id: portalUser.client_id, scope: "portal" },

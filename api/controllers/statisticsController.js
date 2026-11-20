@@ -19,6 +19,10 @@ const projectStatuses = [
 const accrualRevenueStatuses = ["sent", "partially_paid", "paid", "overdue"];
 const directCostCategories = ["materials", "subcontractor", "labor"];
 
+// Not P&L expenses: an employee advance is recovered through salary deduction (the salary itself is
+// the cost), and equipment is a capital purchase. They are reported separately, never in profit.
+const nonPnlCategories = ["advance", "equipment"];
+
 /**
  * GET /api/statistics
  * Returns dashboard statistics for the authenticated company.
@@ -47,7 +51,7 @@ export async function getDashboard(req, res) {
         .eq("company_id", companyId),
       supabaseAdmin
         .from(projectsTable)
-        .select("id, status, price")
+        .select("id, status, price, is_test")
         .eq("company_id", companyId),
       getProjectsByStatus(companyId),
       getPaymentsSummary(companyId, from_date, to_date),
@@ -61,22 +65,29 @@ export async function getDashboard(req, res) {
     if (paymentsData.error) throw paymentsData.error;
     if (expensesData.error) throw expensesData.error;
 
-    const totalProjectValue = (projectsData.data || []).reduce(
-      (sum, p) => sum + Number(p.price ?? 0),
-      0
-    );
+    // Test/demo projects never count; cancelled projects have no contract value any more.
+    const liveProjects = (projectsData.data || []).filter((p) => !p.is_test);
+    const totalProjectValue = liveProjects
+      .filter((p) => p.status !== "cancelled")
+      .reduce((sum, p) => sum + Number(p.price ?? 0), 0);
+    const receivables = await getReceivables(companyId, liveProjects);
 
     const financial = computeFinancialMetrics(
       paymentsData.total,
       expensesData.byType.direct ?? 0,
-      expensesData.byType.operational ?? 0
+      expensesData.byType.operational ?? 0,
+      expensesData.adSpend ?? 0
     );
 
     return res.json({
       overview: {
         totalClients: clientsCount.count ?? 0,
-        totalProjects: projectsData.data?.length ?? 0,
+        totalProjects: liveProjects.length,
         totalProjectValue: Math.round(totalProjectValue * 100) / 100,
+        outstandingReceivables: receivables.outstanding,
+        overpaidAmount: receivables.overpaid,
+        cancelledProjectsCollected: receivables.cancelledCollected,
+        testProjectsExcluded: (projectsData.data?.length ?? 0) - liveProjects.length,
         totalPaymentsReceived: paymentsData.total,
         totalPaymentsCount: paymentsData.count,
         totalExpenses: expensesData.total,
@@ -93,6 +104,8 @@ export async function getDashboard(req, res) {
         total: expensesData.total,
         count: expensesData.count,
         byType: expensesData.byType,
+        adSpend: expensesData.adSpend ?? 0,
+        excludedFromProfit: expensesData.excluded ?? { advance: 0, equipment: 0 },
       },
       financial,
     });
@@ -128,7 +141,8 @@ export async function getFinancial(req, res) {
       financial = computeFinancialMetrics(
         paymentsData.total,
         expensesData.byType.direct ?? 0,
-        expensesData.byType.operational ?? 0
+        expensesData.byType.operational ?? 0,
+        expensesData.adSpend ?? 0
       );
     } else {
       const [revenueResult, expensesResult] = await Promise.all([
@@ -141,7 +155,8 @@ export async function getFinancial(req, res) {
       financial = computeFinancialMetrics(
         revenueResult.total,
         expensesResult.direct,
-        expensesResult.operational
+        expensesResult.operational,
+        expensesResult.adSpend ?? 0
       );
     }
 
@@ -392,7 +407,8 @@ export async function getProjectProfitability(req, res) {
     const { data: projects, error: projErr } = await supabaseAdmin
       .from(projectsTable)
       .select("id, title")
-      .eq("company_id", companyId);
+      .eq("company_id", companyId)
+      .eq("is_test", false);
     if (projErr) throw projErr;
 
     const results = await Promise.all(
@@ -420,7 +436,8 @@ async function getProjectsByStatus(companyId) {
   const { data, error } = await supabaseAdmin
     .from(projectsTable)
     .select("status")
-    .eq("company_id", companyId);
+    .eq("company_id", companyId)
+    .eq("is_test", false);
 
   if (error) return { error };
 
@@ -449,11 +466,63 @@ async function getRecentFeedbackAverage(companyId) {
   return round2(data.reduce((sum, r) => sum + Number(r.rating ?? 0), 0) / data.length);
 }
 
+/** Ids of the company's test/demo projects — their payments and costs are excluded from every report. */
+async function getTestProjectIds(companyId) {
+  const { data, error } = await supabaseAdmin
+    .from(projectsTable)
+    .select("id")
+    .eq("company_id", companyId)
+    .eq("is_test", true);
+  if (error) throw error;
+  return (data || []).map((p) => p.id);
+}
+
+/**
+ * Per-project receivables (contract price − payments), ignoring test projects. Cancelled projects
+ * carry no receivable (what was collected on them is reported separately); a project that has been
+ * paid more than its price contributes to "overpaid", never as a negative receivable.
+ */
+async function getReceivables(companyId, liveProjects) {
+  const { data, error } = await supabaseAdmin
+    .from(paymentsTable)
+    .select("project_id, amount")
+    .eq("company_id", companyId);
+  if (error) throw error;
+
+  const paidByProject = new Map();
+  (data || []).forEach((row) => {
+    const key = String(row.project_id);
+    paidByProject.set(key, (paidByProject.get(key) || 0) + Number(row.amount ?? 0));
+  });
+
+  let outstanding = 0;
+  let overpaid = 0;
+  let cancelledCollected = 0;
+  liveProjects.forEach((p) => {
+    const paid = paidByProject.get(String(p.id)) || 0;
+    if (p.status === "cancelled") {
+      cancelledCollected += paid;
+      return;
+    }
+    const price = Number(p.price ?? 0);
+    if (price > paid) outstanding += price - paid;
+    else if (paid > price) overpaid += paid - price;
+  });
+
+  return {
+    outstanding: round2(outstanding),
+    overpaid: round2(overpaid),
+    cancelledCollected: round2(cancelledCollected),
+  };
+}
+
 async function getPaymentsSummary(companyId, fromDate, toDate) {
+  const testIds = await getTestProjectIds(companyId);
   let query = supabaseAdmin
     .from(paymentsTable)
     .select("amount")
     .eq("company_id", companyId);
+  if (testIds.length > 0) query = query.not("project_id", "in", `(${testIds.join(",")})`);
 
   if (fromDate) query = query.gte("payment_date", fromDate);
   if (toDate) query = query.lte("payment_date", toDate);
@@ -469,33 +538,46 @@ async function getPaymentsSummary(companyId, fromDate, toDate) {
 }
 
 async function getExpensesSummary(companyId, fromDate, toDate) {
+  const testIds = await getTestProjectIds(companyId);
   let query = supabaseAdmin
     .from(expensesTable)
-    .select("amount, type")
+    .select("amount, type, cost_category")
     .eq("company_id", companyId);
 
+  if (testIds.length > 0) query = query.or(`project_id.is.null,project_id.not.in.(${testIds.join(",")})`);
   if (fromDate) query = query.gte("expense_date", fromDate);
   if (toDate) query = query.lte("expense_date", toDate);
 
   const { data, error } = await query;
-  if (error) return { error, total: 0, count: 0, byType: {} };
+  if (error) return { error, total: 0, count: 0, byType: {}, adSpend: 0, excluded: {} };
 
   const byType = { direct: 0, operational: 0 };
+  const excluded = { advance: 0, equipment: 0 };
   let total = 0;
+  let adSpend = 0;
+  let count = 0;
   (data || []).forEach((row) => {
     const amt = Number(row.amount ?? 0);
+    if (nonPnlCategories.includes(row.cost_category)) {
+      excluded[row.cost_category] += amt;
+      return;
+    }
+    count += 1;
     total += amt;
     const t = row.type === "operational" ? "operational" : "direct";
     byType[t] = (byType[t] || 0) + amt;
+    if (row.cost_category === "ad_spend") adSpend += amt;
   });
 
   return {
     total: round2(total),
-    count: data?.length ?? 0,
+    count,
     byType: {
       direct: round2(byType.direct || 0),
       operational: round2(byType.operational || 0),
     },
+    adSpend: round2(adSpend),
+    excluded: { advance: round2(excluded.advance), equipment: round2(excluded.equipment) },
   };
 }
 
@@ -523,10 +605,12 @@ async function getAccrualRevenue(companyId, fromDate, toDate) {
  * Accrual direct/operational expenses: expenses table (by type) + vendor_bills (by cost_category bucket).
  */
 async function getAccrualExpensesSummary(companyId, fromDate, toDate) {
+  const testIds = await getTestProjectIds(companyId);
   let expQuery = supabaseAdmin
     .from(expensesTable)
-    .select("amount, type")
+    .select("amount, type, cost_category")
     .eq("company_id", companyId);
+  if (testIds.length > 0) expQuery = expQuery.or(`project_id.is.null,project_id.not.in.(${testIds.join(",")})`);
   if (fromDate) expQuery = expQuery.gte("expense_date", fromDate);
   if (toDate) expQuery = expQuery.lte("expense_date", toDate);
 
@@ -539,16 +623,19 @@ async function getAccrualExpensesSummary(companyId, fromDate, toDate) {
   if (toDate) billQuery = billQuery.lte("bill_date", toDate);
 
   const [expResult, billResult] = await Promise.all([expQuery, billQuery]);
-  if (expResult.error) return { error: expResult.error, direct: 0, operational: 0 };
-  if (billResult.error) return { error: billResult.error, direct: 0, operational: 0 };
+  if (expResult.error) return { error: expResult.error, direct: 0, operational: 0, adSpend: 0 };
+  if (billResult.error) return { error: billResult.error, direct: 0, operational: 0, adSpend: 0 };
 
   let direct = 0;
   let operational = 0;
+  let adSpend = 0;
 
   (expResult.data || []).forEach((row) => {
+    if (nonPnlCategories.includes(row.cost_category)) return;
     const amt = Number(row.amount ?? 0);
     if (row.type === "direct") direct += amt;
     else operational += amt;
+    if (row.cost_category === "ad_spend") adSpend += amt;
   });
 
   (billResult.data || []).forEach((row) => {
@@ -557,7 +644,7 @@ async function getAccrualExpensesSummary(companyId, fromDate, toDate) {
     else operational += amt;
   });
 
-  return { direct: round2(direct), operational: round2(operational) };
+  return { direct: round2(direct), operational: round2(operational), adSpend: round2(adSpend) };
 }
 
 /**
@@ -582,20 +669,22 @@ function buildAgingBuckets(rows) {
 
 /**
  * Job-costing profitability for a single project.
+ *
+ * Revenue: invoiced subtotal when the project has invoices; otherwise the cash actually collected
+ * (many projects are paid without invoices) — `revenueBasis` says which one was used. Employee
+ * advances and equipment purchases are not project costs. For marketing packages the client's ad
+ * budget is tracked against the ad spend actually paid out.
  */
 async function computeProjectProfitability(companyId, projectId, titleHint) {
-  let title = titleHint;
-  if (title === undefined) {
-    const { data: project, error } = await supabaseAdmin
-      .from(projectsTable)
-      .select("id, title")
-      .eq("id", projectId)
-      .eq("company_id", companyId)
-      .maybeSingle();
-    if (error) throw error;
-    if (!project) return null;
-    title = project.title;
-  }
+  const { data: project, error: projectErr } = await supabaseAdmin
+    .from(projectsTable)
+    .select("id, title, ad_budget")
+    .eq("id", projectId)
+    .eq("company_id", companyId)
+    .maybeSingle();
+  if (projectErr) throw projectErr;
+  if (!project) return null;
+  const title = titleHint ?? project.title;
 
   const [invoicesRes, paymentsRes, expensesRes, billsRes] = await Promise.all([
     supabaseAdmin
@@ -626,16 +715,19 @@ async function computeProjectProfitability(companyId, projectId, titleHint) {
   if (expensesRes.error) throw expensesRes.error;
   if (billsRes.error) throw billsRes.error;
 
-  const recognizedRevenue = round2(
+  const invoicedRevenue = round2(
     (invoicesRes.data || []).reduce((sum, r) => sum + Number(r.subtotal ?? 0), 0)
   );
   const collectedRevenue = round2(
     (paymentsRes.data || []).reduce((sum, r) => sum + Number(r.amount ?? 0), 0)
   );
+  const revenueBasis = invoicedRevenue > 0 ? "invoices" : "payments";
+  const revenue = revenueBasis === "invoices" ? invoicedRevenue : collectedRevenue;
 
   const costBreakdown = {};
   let totalCost = 0;
   (expensesRes.data || []).forEach((row) => {
+    if (nonPnlCategories.includes(row.cost_category)) return;
     const amt = Number(row.amount ?? 0);
     const cat = row.cost_category || "other";
     costBreakdown[cat] = round2((costBreakdown[cat] || 0) + amt);
@@ -649,18 +741,26 @@ async function computeProjectProfitability(companyId, projectId, titleHint) {
   });
   totalCost = round2(totalCost);
 
-  const grossProfit = round2(recognizedRevenue - totalCost);
-  const grossMargin = recognizedRevenue > 0 ? round2((grossProfit / recognizedRevenue) * 100) : 0;
+  const grossProfit = round2(revenue - totalCost);
+  const grossMargin = revenue > 0 ? round2((grossProfit / revenue) * 100) : 0;
+
+  const adBudget = round2(Number(project.ad_budget ?? 0));
+  const adSpend = round2(costBreakdown.ad_spend ?? 0);
 
   return {
     project_id: projectId,
     title,
-    recognizedRevenue,
+    recognizedRevenue: revenue,
+    revenueBasis,
     collectedRevenue,
     totalCost,
     costBreakdown,
     grossProfit,
     grossMargin,
+    adBudget,
+    adSpend,
+    // Negative = more was spent on ads than the client's budget; positive = client money not yet spent.
+    adBudgetRemaining: adBudget > 0 ? round2(adBudget - adSpend) : null,
     budgetedCost: null,
     budgetVariance: null,
   };
@@ -673,7 +773,7 @@ function round2(n) {
 /**
  * Compute profitability metrics from revenue and expense totals.
  */
-function computeFinancialMetrics(revenue, directExpenses, operationalExpenses) {
+function computeFinancialMetrics(revenue, directExpenses, operationalExpenses, adSpend = 0) {
   const totalExpenses = round2(directExpenses + operationalExpenses);
   const grossProfit = round2(revenue - directExpenses);
   const operatingIncome = round2(revenue - directExpenses - operationalExpenses);
@@ -691,6 +791,10 @@ function computeFinancialMetrics(revenue, directExpenses, operationalExpenses) {
     directExpenses: round2(directExpenses),
     operationalExpenses: round2(operationalExpenses),
     totalExpenses,
+    // Ad spend is already inside directExpenses; shown separately because marketing packages
+    // bundle the client's ad budget into what they pay (revenue after ad spend = our real fee).
+    adSpend: round2(adSpend),
+    netRevenueAfterAdSpend: round2(revenue - adSpend),
     grossProfit,
     grossMargin: { amount: grossProfit, percent: grossMarginPercent },
     operatingIncome,

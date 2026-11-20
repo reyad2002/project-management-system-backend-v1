@@ -7,6 +7,7 @@ import * as tasksController from "../controllers/tasksController.js";
 import * as credentialsController from "../controllers/credentialsController.js";
 import * as feedbackController from "../controllers/feedbackController.js";
 import * as projectFilesController from "../controllers/projectFilesController.js";
+import * as projectReportsController from "../controllers/projectReportsController.js";
 import { revealRateLimit } from "../middleware/revealRateLimit.js";
 
 const router = Router();
@@ -31,6 +32,9 @@ router.get("/meeting-notes/:id/export", portalMeetingsController.exportNote);
 
 // Project links (read-only)
 router.get("/projects/:id/links", projectLinksController.portalListByProject);
+
+// Monthly performance reports (read-only)
+router.get("/projects/:id/reports", projectReportsController.portalListByProject);
 
 // Pending on client (read-only)
 router.get("/projects/:id/tasks", tasksController.portalListPendingByProject);

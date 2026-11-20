@@ -12,6 +12,8 @@ import * as projectLinksController from "../controllers/projectLinksController.j
 import * as credentialsController from "../controllers/credentialsController.js";
 import * as feedbackController from "../controllers/feedbackController.js";
 import * as projectFilesController from "../controllers/projectFilesController.js";
+import * as projectReportsController from "../controllers/projectReportsController.js";
+import { requireRole, ACCESS } from "../middleware/auth.js";
 
 const router = Router();
 
@@ -21,7 +23,7 @@ router.get("/:id", projectsController.getOne);
 router.post("/", projectsController.create);
 router.put("/:id", projectsController.update);
 router.delete("/:id", projectsController.remove);
-router.get("/:id/payments", paymentsController.listByProject);
+router.get("/:id/payments", requireRole(...ACCESS.finance), paymentsController.listByProject);
 
 // All phase operations by project id
 router.get("/:id/phases", phasesController.listByProject);
@@ -53,11 +55,15 @@ router.post("/:id/links", projectLinksController.createByProject);
 router.get("/:id/links", projectLinksController.listByProject);
 
 // Credentials scoped by project id
-router.post("/:id/credentials", credentialsController.create);
-router.get("/:id/credentials", credentialsController.listByProject);
+router.post("/:id/credentials", requireRole(...ACCESS.credentials), credentialsController.create);
+router.get("/:id/credentials", requireRole(...ACCESS.credentials), credentialsController.listByProject);
 
 // Feedback scoped by project id
 router.get("/:id/feedback", feedbackController.listByProject);
+
+// Monthly performance reports scoped by project id
+router.get("/:id/reports", projectReportsController.listByProject);
+router.post("/:id/reports", projectReportsController.upsertByProject);
 
 // Files scoped by project id
 router.post("/:id/files", projectFilesController.createByProject);

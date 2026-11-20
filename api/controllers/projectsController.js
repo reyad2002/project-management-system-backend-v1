@@ -3,6 +3,8 @@ import { supabaseAdmin } from "../../db_connection.js";
 const table = "projects";
 
 const statuses = ["draft", "active", "on_hold", "cancelled", "completed"];
+const projectTypes = ["software", "marketing", "branding", "social_media", "other"];
+const billingModels = ["fixed", "retainer", "hybrid"];
 export async function list(req, res) {
   try {
     const companyId = req.user?.company_id;
@@ -13,6 +15,8 @@ export async function list(req, res) {
     const {
       client_id,
       status,
+      type,
+      billing_model,
       q, // search term
       page = "1",
       limit = "20",
@@ -41,6 +45,15 @@ export async function list(req, res) {
         return res.status(400).json({ error: "Invalid status" });
       }
       query = query.eq("status", status);
+    }
+
+    if (type) {
+      if (!projectTypes.includes(type)) return res.status(400).json({ error: "Invalid type" });
+      query = query.eq("type", type);
+    }
+    if (billing_model) {
+      if (!billingModels.includes(billing_model)) return res.status(400).json({ error: "Invalid billing_model" });
+      query = query.eq("billing_model", billing_model);
     }
 
     // optional search on title/details
@@ -126,7 +139,7 @@ export async function create(req, res) {
       return res.status(401).json({ error: "Not authenticated" });
     }
 
-    const { client_id, title, details, start_date, due_date, price, status } =
+    const { client_id, title, details, start_date, due_date, price, status, type, billing_model, is_test, ad_budget } =
       req.body;
 
     if (!client_id || !title || !String(title).trim()) {
@@ -137,6 +150,22 @@ export async function create(req, res) {
 
     if (status != null && !statuses.includes(status)) {
       return res.status(400).json({ error: "Invalid status" });
+    }
+    if (type != null && !projectTypes.includes(type)) {
+      return res.status(400).json({ error: "Invalid type" });
+    }
+    if (billing_model != null && !billingModels.includes(billing_model)) {
+      return res.status(400).json({ error: "Invalid billing_model" });
+    }
+    if (is_test != null && typeof is_test !== "boolean") {
+      return res.status(400).json({ error: "is_test must be true or false" });
+    }
+    if (ad_budget != null) {
+      const ad = Number(ad_budget);
+      if (!Number.isFinite(ad) || ad < 0) return res.status(400).json({ error: "ad_budget must be a number >= 0" });
+      if (price != null && Number(price) > 0 && ad > Number(price)) {
+        return res.status(400).json({ error: "ad_budget cannot be more than the project price" });
+      }
     }
 
     const { data: client, error: clientErr } = await supabaseAdmin
@@ -167,6 +196,10 @@ export async function create(req, res) {
       due_date: due_date ?? null,
       price: price ?? null,
       status: status ?? "active",
+      type: type ?? "software",
+      billing_model: billing_model ?? "fixed",
+      is_test: is_test ?? false,
+      ad_budget: ad_budget != null ? Number(ad_budget) : 0,
       created_by: userId,
     };
 
@@ -174,7 +207,7 @@ export async function create(req, res) {
       .from(table)
       .insert(payload)
       .select(
-        "id, created_at, company_id, client_id, title, details, start_date, due_date, price, status, created_by",
+        "id, created_at, company_id, client_id, title, details, start_date, due_date, price, status, type, billing_model, is_test, ad_budget, created_by",
       )
       .single();
 
@@ -199,7 +232,7 @@ export async function update(req, res) {
       return res.status(400).json({ error: "Missing id" });
     }
 
-    const { client_id, title, details, start_date, due_date, price, status } =
+    const { client_id, title, details, start_date, due_date, price, status, type, billing_model, is_test, ad_budget } =
       req.body;
 
     // at least one field
@@ -210,7 +243,11 @@ export async function update(req, res) {
       start_date == null &&
       due_date == null &&
       price == null &&
-      status == null
+      status == null &&
+      type == null &&
+      billing_model == null &&
+      is_test == null &&
+      ad_budget == null
     ) {
       return res.status(400).json({ error: "No fields to update" });
     }
@@ -218,6 +255,52 @@ export async function update(req, res) {
     // validate status if provided
     if (status != null && !statuses.includes(status)) {
       return res.status(400).json({ error: "Invalid status" });
+    }
+    if (type != null && !projectTypes.includes(type)) {
+      return res.status(400).json({ error: "Invalid type" });
+    }
+    if (billing_model != null && !billingModels.includes(billing_model)) {
+      return res.status(400).json({ error: "Invalid billing_model" });
+    }
+    if (is_test != null && typeof is_test !== "boolean") {
+      return res.status(400).json({ error: "is_test must be true or false" });
+    }
+
+    // Money guards: never let the price drop below what the client already paid (that is how
+    // "overpaid" projects appear), and keep the ad budget inside the package price.
+    if (price != null || ad_budget != null) {
+      const { data: current, error: currentErr } = await supabaseAdmin
+        .from(table)
+        .select("price, ad_budget")
+        .eq("id", id)
+        .eq("company_id", companyId)
+        .maybeSingle();
+      if (currentErr) throw currentErr;
+      if (!current) return res.status(404).json({ error: "Not found" });
+
+      const finalPrice = price != null ? Number(price) : Number(current.price ?? 0);
+      const finalAdBudget = ad_budget != null ? Number(ad_budget) : Number(current.ad_budget ?? 0);
+      if (ad_budget != null && (!Number.isFinite(finalAdBudget) || finalAdBudget < 0)) {
+        return res.status(400).json({ error: "ad_budget must be a number >= 0" });
+      }
+      if (finalPrice > 0 && finalAdBudget > finalPrice) {
+        return res.status(400).json({ error: "ad_budget cannot be more than the project price" });
+      }
+
+      if (price != null && Number(price) !== Number(current.price ?? 0)) {
+        const { data: paidRows, error: paidErr } = await supabaseAdmin
+          .from("payments")
+          .select("amount")
+          .eq("company_id", companyId)
+          .eq("project_id", id);
+        if (paidErr) throw paidErr;
+        const paid = (paidRows || []).reduce((sum, r) => sum + Number(r.amount || 0), 0);
+        if (Number(price) < paid) {
+          return res.status(400).json({
+            error: `Price (${Number(price)}) is lower than the payments already received (${paid}).`,
+          });
+        }
+      }
     }
 
     // optional: validate dates
@@ -261,6 +344,10 @@ export async function update(req, res) {
       due_date,
       price,
       status,
+      type,
+      billing_model,
+      is_test,
+      ad_budget: ad_budget != null ? Number(ad_budget) : undefined,
     };
 
     const clean = Object.fromEntries(
