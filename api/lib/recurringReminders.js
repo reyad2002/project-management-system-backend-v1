@@ -1,6 +1,7 @@
 import { supabaseAdmin } from "../../db_connection.js";
 import { createNotifications } from "./notifications.js";
 import { todayStr } from "./recurring.js";
+import { chargeDueRecurringExpenses } from "./recurringCharges.js";
 
 const REMINDER_WINDOW_DAYS = 7;
 
@@ -97,6 +98,8 @@ async function sendUpcomingReminders(tableName, dateColumn, relatedType, selectF
  * the team about anything (revenue or expense) due within the next 7 days, once per billing cycle.
  */
 export async function runRecurringBillingJob() {
+  // Subscriptions that fell due are deducted first, so the reminders below only mention what's still ahead.
+  const chargedExpenses = await chargeDueRecurringExpenses();
   const overdueRevenueIds = await markRevenueOverdue();
 
   const [remindedRevenueIds, remindedExpenseIds] = await Promise.all([
@@ -119,6 +122,7 @@ export async function runRecurringBillingJob() {
   ]);
 
   return {
+    chargedExpenses,
     overdueRevenueIds,
     remindedRevenueIds,
     remindedExpenseIds,

@@ -1,6 +1,7 @@
 import { supabaseAdmin } from "../../db_connection.js";
 import { recurringExpenseTypes, recurringExpenseStatuses, addBillingCycle, todayStr, billingCycles } from "../lib/recurring.js";
 import { getProjectForCompany } from "../lib/tasks.js";
+import { chargeDueRecurringExpenses, expenseForCycle } from "../lib/recurringCharges.js";
 
 const table = "recurring_expenses";
 const expensesTable = "expenses";
@@ -21,6 +22,13 @@ export async function list(req, res) {
   try {
     const companyId = req.user?.company_id;
     if (!companyId) return res.status(401).json({ error: "Not authenticated" });
+
+    // Catch up on anything that fell due (idempotent) so the list is always current, cron or not.
+    try {
+      await chargeDueRecurringExpenses({ companyId });
+    } catch (chargeErr) {
+      console.error("[recurring-expenses] auto-charge failed:", chargeErr.message);
+    }
 
     const { linked_project_id, status, page = "1", limit = "20" } = req.query;
     if (status && !recurringExpenseStatuses.includes(status)) {
@@ -72,7 +80,7 @@ export async function create(req, res) {
     const companyId = req.user?.company_id;
     if (!companyId) return res.status(401).json({ error: "Not authenticated" });
 
-    const { linked_project_id, type, name, amount, currency, billing_cycle, next_due_date, notes } = req.body;
+    const { linked_project_id, type, name, amount, currency, billing_cycle, next_due_date, notes, auto_charge } = req.body;
     if (!name || !String(name).trim()) return res.status(400).json({ error: "name is required" });
     if (!type || !recurringExpenseTypes.includes(type)) {
       return res.status(400).json({ error: `Invalid type (${recurringExpenseTypes.join(" | ")})` });
@@ -102,6 +110,7 @@ export async function create(req, res) {
       currency: currency ? String(currency).trim() : undefined,
       billing_cycle,
       next_due_date,
+      auto_charge: auto_charge === undefined ? undefined : Boolean(auto_charge),
       notes: notes ? String(notes).trim() : null,
     };
     const clean = Object.fromEntries(Object.entries(payload).filter(([, v]) => v !== undefined));
@@ -130,7 +139,7 @@ export async function update(req, res) {
     if (existingErr) throw existingErr;
     if (!existing) return res.status(404).json({ error: "Not found" });
 
-    const { linked_project_id, type, name, amount, currency, billing_cycle, next_due_date, status, notes } = req.body;
+    const { linked_project_id, type, name, amount, currency, billing_cycle, next_due_date, status, notes, auto_charge } = req.body;
 
     if (linked_project_id !== undefined && linked_project_id !== null) {
       const project = await getProjectForCompany(companyId, linked_project_id, "id");
@@ -165,6 +174,7 @@ export async function update(req, res) {
       ...(billing_cycle !== undefined ? { billing_cycle } : {}),
       ...(next_due_date !== undefined ? { next_due_date } : {}),
       ...(status !== undefined ? { status } : {}),
+      ...(auto_charge !== undefined ? { auto_charge: Boolean(auto_charge) } : {}),
       ...(notes !== undefined ? { notes: notes ? String(notes).trim() : null } : {}),
       updated_at: new Date().toISOString(),
     };
@@ -278,17 +288,12 @@ export async function markPaid(req, res) {
     const today = todayStr();
     const { data: expense, error: expErr } = await supabaseAdmin
       .from(expensesTable)
-      .insert({
-        company_id: companyId,
-        project_id: existing.linked_project_id,
-        amount: existing.amount,
-        expense_date: today,
-        title: `Recurring: ${existing.name}`,
-        type: "operational",
-        cost_category: "software",
-      })
+      .insert(expenseForCycle(existing, today))
       .select("*")
       .single();
+    if (expErr?.code === "23505") {
+      return res.status(409).json({ error: "This subscription already has an expense recorded for today" });
+    }
     if (expErr) throw expErr;
 
     const nextDueDate = addBillingCycle(existing.next_due_date, existing.billing_cycle);

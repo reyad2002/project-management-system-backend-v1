@@ -1,5 +1,7 @@
 import { supabaseAdmin } from "../../db_connection.js";
 
+import { chargeDueRecurringExpenses } from "../lib/recurringCharges.js";
+
 const projectsTable = "projects";
 const clientsTable = "clients";
 const paymentsTable = "payments";
@@ -36,6 +38,13 @@ export async function getDashboard(req, res) {
     }
 
     const { from_date, to_date } = req.query;
+
+    // Record subscriptions that fell due so the expense totals below are current.
+    try {
+      await chargeDueRecurringExpenses({ companyId });
+    } catch (chargeErr) {
+      console.error("[dashboard] auto-charge failed:", chargeErr.message);
+    }
 
     const [
       clientsCount,

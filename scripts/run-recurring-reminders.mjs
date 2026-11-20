@@ -6,7 +6,7 @@ import { runRecurringBillingJob } from "../api/lib/recurringReminders.js";
 runRecurringBillingJob()
   .then((result) => {
     console.log(
-      `[recurring-billing-cron] overdue: ${result.overdueRevenueIds.length} revenue; reminded: ${result.remindedRevenueIds.length} revenue, ${result.remindedExpenseIds.length} expenses`
+      `[recurring-billing-cron] charged: ${result.chargedExpenses.length} subscription cycles; overdue: ${result.overdueRevenueIds.length} revenue; reminded: ${result.remindedRevenueIds.length} revenue, ${result.remindedExpenseIds.length} expenses`
     );
     process.exit(0);
   })
